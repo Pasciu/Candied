@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Candied.Decompiler</RootNamespace>
+    <AssemblyName>Candied.Decompiler</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Candied.Primitives\Candied.Primitives.csproj" />
+    <ProjectReference Include="..\Candied.Core\Candied.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ICSharpCode.Decompiler" Version="11.2.0.10050" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.9.0" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.2" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="9.0.2" />
+    <PackageReference Include="AssetsTools.NET" Version="3.0.5" />
+    <PackageReference Include="AssetsTools.NET.Texture" Version="3.0.2" />
+    <PackageReference Include="StbImageWriteSharp" Version="1.16.7" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\classdata.tpk" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Candied.Tests" />
+  </ItemGroup>
+</Project>

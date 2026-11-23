@@ -1,0 +1,19 @@
+{
+  "$comment": "Candied MCP Server Configuration Template",
+  "mcpServers": {
+    "Candied": {
+      "command": "dotnet",
+      "args": [
+        "run",
+        "--project",
+        "<ABSOLUTE_PATH_TO_REPO>/src/Candied.Agent",
+        "-c",
+        "Release"
+      ]
+    },
+    "Candied-Published": {
+      "command": "<ABSOLUTE_PATH_TO_REPO>/publish/Candied.Agent.exe",
+      "args": []
+    }
+  }
+}

@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <RootNamespace>Candied.Tests</RootNamespace>
+    <AssemblyName>Candied.Tests</AssemblyName>
+    <!-- CA1707: Test names with underscores, CA1861: Constant arrays in test data -->
+    <NoWarn>$(NoWarn);CA1707;CA1861</NoWarn>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(OS)' == 'Windows_NT'">
+    <TargetFramework>net9.0-windows</TargetFramework>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.13.0" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.0.2">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="9.0.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Candied.Primitives\Candied.Primitives.csproj" />
+    <ProjectReference Include="..\..\src\Candied.VisionBridge.Protocol\Candied.VisionBridge.Protocol.csproj" />
+    <ProjectReference Include="..\..\src\Candied.Core\Candied.Core.csproj" />
+    <ProjectReference Include="..\..\src\Candied.Decompiler\Candied.Decompiler.csproj" />
+    <ProjectReference Include="..\..\src\Candied.Workspace\Candied.Workspace.csproj" />
+    <ProjectReference Include="..\..\src\Candied.Agent\Candied.Agent.csproj" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(OS)' == 'Windows_NT'">
+    <ProjectReference Include="..\..\src\Candied.Studio\Candied.Studio.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Candied.Primitives</RootNamespace>
+    <AssemblyName>Candied.Primitives</AssemblyName>
+  </PropertyGroup>
+</Project>

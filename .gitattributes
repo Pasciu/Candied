@@ -1,0 +1,9 @@
+# Enforce LF line endings across all platforms to match .editorconfig (end_of_line = lf)
+* text=auto eol=lf
+
+# Windows scripts (if needed)
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Shell scripts must always use LF
+*.sh text eol=lf

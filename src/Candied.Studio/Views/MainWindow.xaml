@@ -1,0 +1,645 @@
+<Window x:Class="Candied.Studio.Views.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:controls="clr-namespace:Candied.Studio.Controls"
+        xmlns:vm="clr-namespace:Candied.Studio.ViewModels"
+        Title="Candied Studio — Unity 16:9 Host &amp; Vision Bridge Workbench"
+        Height="860" Width="1520"
+        MinHeight="640" MinWidth="980"
+        WindowStartupLocation="CenterScreen"
+        ShowInTaskbar="True"
+        Background="#09090B"
+        Foreground="#F4F4F5">
+
+    <Window.Resources>
+        <!-- Stile moderno per pulsanti dark/workbench -->
+        <Style x:Key="WorkbenchButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="#27272A" />
+            <Setter Property="Foreground" Value="#F4F4F5" />
+            <Setter Property="BorderBrush" Value="#3F3F46" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="12,6" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="PART_Border"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="5"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="PART_Border" Property="BorderBrush" Value="#38BDF8" />
+                                <Setter Property="Opacity" Value="0.92" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter Property="Opacity" Value="0.80" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.40" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Stile per le Tab dell'Inspector -->
+        <Style TargetType="TabItem">
+            <Setter Property="Background" Value="#18181B" />
+            <Setter Property="Foreground" Value="#A1A1AA" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="12,7" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TabItem">
+                        <Border x:Name="TabBorder"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="#27272A"
+                                BorderThickness="0,0,0,2"
+                                Padding="{TemplateBinding Padding}"
+                                Margin="0,0,4,0"
+                                CornerRadius="5,5,0,0">
+                            <ContentPresenter ContentSource="Header" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="TabBorder" Property="Background" Value="#27272A" />
+                                <Setter TargetName="TabBorder" Property="BorderBrush" Value="#38BDF8" />
+                                <Setter Property="Foreground" Value="#38BDF8" />
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Foreground" Value="#F4F4F5" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <!-- Row 0: Top Workbench Command Bar -->
+            <RowDefinition Height="Auto" />
+            <!-- Row 1: Main Stage + Collapsible Inspector -->
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- ========================================================================= -->
+        <!-- ROW 0: TOP WORKBENCH COMMAND BAR (2-Row Responsive Toolbar)               -->
+        <!-- ========================================================================= -->
+        <Border Grid.Row="0" Background="#18181B" BorderBrush="#27272A" BorderThickness="0,0,0,1" Padding="14,8">
+            <StackPanel>
+                <!-- RIGA 1: Brand + Selezione Gioco + Controlli Processo -->
+                <Grid Margin="0,0,0,6">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <!-- 1. Brand -->
+                    <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,16,0">
+                        <Border Background="#0284C7" Width="8" Height="22" CornerRadius="3" Margin="0,0,8,0" />
+                        <StackPanel>
+                            <TextBlock Text="CANDIED STUDIO" FontSize="14" FontWeight="Bold" Foreground="#F4F4F5" />
+                            <TextBlock Text="16:9 Host &amp; Vision Workbench" FontSize="10" Foreground="#71717A" />
+                        </StackPanel>
+                    </StackPanel>
+
+                    <!-- 2. Selettore Gioco Registrato + Sfoglia -->
+                    <Grid Grid.Column="1" VerticalAlignment="Center" Margin="0,0,14,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="165" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <ComboBox Grid.Column="0"
+                                  ItemsSource="{Binding RegisteredGames}"
+                                  SelectedItem="{Binding SelectedRegisteredGame}"
+                                  DisplayMemberPath="Name"
+                                  ToolTip="Seleziona rapidamente un gioco registrato in Candied"
+                                  Margin="0,0,6,0" Padding="6,4" FontSize="12"
+                                  VerticalContentAlignment="Center" />
+
+                        <TextBox Grid.Column="1"
+                                 Text="{Binding SelectedGamePath, Mode=OneWay}"
+                                 IsReadOnly="True"
+                                 Background="#09090B" Foreground="#D4D4D8" BorderBrush="#3F3F46"
+                                 Padding="8,5" VerticalContentAlignment="Center" FontSize="11"
+                                 ToolTip="{Binding SelectedGamePath}" />
+
+                        <Button Grid.Column="2" Content="Sfoglia..." Command="{Binding BrowseGameCommand}"
+                                Style="{StaticResource WorkbenchButtonStyle}"
+                                Margin="6,0,0,0" Padding="10,5" />
+
+                        <Button Grid.Column="3" Content="↻" Command="{Binding RefreshRegisteredGamesCommand}"
+                                Style="{StaticResource WorkbenchButtonStyle}"
+                                ToolTip="Ricarica elenco giochi registrati"
+                                Margin="4,0,0,0" Padding="8,5" />
+                    </Grid>
+
+                    <!-- 3. Controlli Processo -->
+                    <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Button Content="▶ Avvia" Command="{Binding StartCommand}"
+                                Style="{StaticResource WorkbenchButtonStyle}"
+                                Background="#15803D" BorderBrush="#16A34A"
+                                Margin="0,0,5,0" Padding="14,5" />
+
+                        <Button Content="⏹ Stop" Command="{Binding StopCommand}"
+                                Style="{StaticResource WorkbenchButtonStyle}"
+                                Background="#B91C1C" BorderBrush="#DC2626"
+                                Margin="0,0,5,0" Padding="14,5" />
+
+                        <Button Content="↻ Riavvia" Command="{Binding RestartCommand}"
+                                Style="{StaticResource WorkbenchButtonStyle}"
+                                Background="#B45309" BorderBrush="#D97706"
+                                Padding="14,5" />
+                    </StackPanel>
+                </Grid>
+
+                <!-- RIGA 2: Scala 16:9 + Switch Mouse Virtuale/Fisico + Stato + Toggle Inspector -->
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <!-- Selettore Risoluzione 16:9 -->
+                    <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,12,0">
+                        <TextBlock Text="Scala 16:9:" Foreground="#A1A1AA" FontSize="11.5" VerticalAlignment="Center" Margin="0,0,6,0" />
+                        <ComboBox ItemsSource="{Binding ViewportPresets}"
+                                  SelectedItem="{Binding SelectedViewportPreset}"
+                                  DisplayMemberPath="DisplayName"
+                                  Width="240" Padding="6,3" FontSize="11.5"
+                                  VerticalContentAlignment="Center"
+                                  ToolTip="Scegli la dimensione del contenitore 16:9 mantenendo sempre le proporzioni 1920×1080" />
+                    </StackPanel>
+
+                    <!-- Switch Mouse Virtuale / Fisico -->
+                    <Button Grid.Column="1"
+                            Content="{Binding InputIsolationButtonText}"
+                            Command="{Binding ToggleInputIsolationCommand}"
+                            Style="{StaticResource WorkbenchButtonStyle}"
+                            Background="#1E293B" BorderBrush="#38BDF8"
+                            Margin="0,0,14,0" Padding="12,4"
+                            ToolTip="Passa tra il Mouse Virtuale isolato dell'AI e il tuo Mouse Fisico per giocare manualmente" />
+
+                    <!-- Stato testuale live -->
+                    <TextBlock Grid.Column="2"
+                               Text="{Binding StatusText}"
+                               Foreground="#D4D4D8"
+                               FontSize="11.5"
+                               VerticalAlignment="Center"
+                               TextTrimming="CharacterEllipsis"
+                               Margin="0,0,12,0"
+                               ToolTip="{Binding StatusText}" />
+
+                    <!-- Toggle Inspector Sidebar -->
+                    <Button Grid.Column="3"
+                            Content="{Binding SidebarToggleButtonText}"
+                            Command="{Binding ToggleSidebarCommand}"
+                            Style="{StaticResource WorkbenchButtonStyle}"
+                            HorizontalAlignment="Right" Padding="12,4" />
+                </Grid>
+            </StackPanel>
+        </Border>
+
+        <!-- ========================================================================= -->
+        <!-- ROW 1: 16:9 CINEMA STAGE + COLLAPSIBLE WORKBENCH INSPECTOR                -->
+        <!-- ========================================================================= -->
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <!-- Colonna 0: Cinema Stage 16:9 (Niente overlay sopra GameHwndHost per rispetto Airspace) -->
+                <ColumnDefinition Width="*" MinWidth="480" />
+                <!-- Colonna 1: Splitter -->
+                <ColumnDefinition Width="Auto" />
+                <!-- Colonna 2: Workbench Inspector -->
+                <ColumnDefinition x:Name="SidebarColumn" Width="470" />
+            </Grid.ColumnDefinitions>
+
+            <!-- COLONNA 0: CINEMA STAGE 16:9 -->
+            <Grid Grid.Column="0" Background="#09090B">
+                <Grid.RowDefinitions>
+                    <!-- Area centrale per la cornice 16:9 -->
+                    <RowDefinition Height="*" />
+                    <!-- Barra telemetria inferiore dello Stage -->
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <!-- Stage Container che calcola il box 16:9 perfetto -->
+                <Grid Grid.Row="0" x:Name="StageContainer" Margin="14" SizeChanged="OnStageContainerSizeChanged">
+                    <!-- Cornice Bezel 16:9 (dimensionata dinamicamente a 16:9 esatti da codice) -->
+                    <Border x:Name="GameBezelBorder"
+                            Background="#000000"
+                            BorderBrush="#27272A"
+                            BorderThickness="1"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center">
+                        <controls:UnityHwndHost x:Name="GameHwndHost"
+                                                HorizontalAlignment="Stretch"
+                                                VerticalAlignment="Stretch" />
+                    </Border>
+                </Grid>
+
+                <!-- Barra di Stato e Telemetria Live sotto il Viewport -->
+                <Border Grid.Row="1" Background="#121215" BorderBrush="#27272A" BorderThickness="0,1,0,0" Padding="14,6">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <!-- Stato testuale a sinistra -->
+                        <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                            <TextBlock Text="{Binding GameName}" Foreground="#38BDF8" FontWeight="Bold" FontSize="12" Margin="0,0,10,0" />
+                            <TextBlock Text="•" Foreground="#52525B" Margin="0,0,10,0" />
+                            <TextBlock Text="{Binding StatusText}" Foreground="#D4D4D8" FontSize="11.5" TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
+
+                        <!-- Pillole di Telemetria a destra -->
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                            <!-- Scena Attiva -->
+                            <Border Background="#18181B" BorderBrush="#27272A" BorderThickness="1" CornerRadius="4" Padding="8,2" Margin="0,0,6,0">
+                                <TextBlock Text="{Binding ActiveSceneBadge}" Foreground="#E4E4E7" FontSize="11" />
+                            </Border>
+
+                            <!-- Risoluzione 16:9 -->
+                            <Border Background="#18181B" BorderBrush="#27272A" BorderThickness="1" CornerRadius="4" Padding="8,2" Margin="0,0,6,0">
+                                <TextBlock Text="{Binding ViewportResolutionBadge}" Foreground="#A1A1AA" FontSize="11" />
+                            </Border>
+
+                            <!-- Modalità Input (Virtual AI vs Mouse Fisico) -->
+                            <Border Background="#18181B" BorderBrush="#27272A" BorderThickness="1" CornerRadius="4" Padding="8,2" Margin="0,0,6,0">
+                                <TextBlock Text="{Binding InputIsolationBadgeText}" Foreground="#38BDF8" FontWeight="SemiBold" FontSize="11" />
+                            </Border>
+
+                            <!-- Modalità Embedding -->
+                            <Border Background="#18181B" BorderBrush="#27272A" BorderThickness="1" CornerRadius="4" Padding="8,2">
+                                <TextBlock Text="{Binding EmbeddingMode}" Foreground="#4ADE80" FontWeight="SemiBold" FontSize="11" />
+                            </Border>
+                        </StackPanel>
+                    </Grid>
+                </Border>
+            </Grid>
+
+            <!-- COLONNA 1: SPLITTER -->
+            <GridSplitter Grid.Column="1"
+                          Width="5"
+                          HorizontalAlignment="Center"
+                          VerticalAlignment="Stretch"
+                          Background="#18181B"
+                          Visibility="{Binding IsSidebarVisible, Converter={x:Static controls:VisibilityConverters.BooleanToVisibility}}" />
+
+            <!-- COLONNA 2: WORKBENCH INSPECTOR A 3 TAB -->
+            <Border Grid.Column="2"
+                    Background="#18181B"
+                    BorderBrush="#27272A"
+                    BorderThickness="1,0,0,0"
+                    Padding="10"
+                    Visibility="{Binding IsSidebarVisible, Converter={x:Static controls:VisibilityConverters.BooleanToVisibility}}">
+
+                <TabControl Background="Transparent" BorderThickness="0" Padding="0">
+
+                    <!-- ========================================================= -->
+                    <!-- TAB 1: VISION & UI INSPECTOR (Screenshot + Click Tester)  -->
+                    <!-- ========================================================= -->
+                    <TabItem Header="📸 Vision &amp; UI">
+                        <Grid Margin="0,8,0,0">
+                            <Grid.RowDefinitions>
+                                <!-- Stato Bridge -->
+                                <RowDefinition Height="Auto" />
+                                <!-- Azioni Screenshot & UI -->
+                                <RowDefinition Height="Auto" />
+                                <!-- Anteprima Interattiva 16:9 -->
+                                <RowDefinition Height="245" />
+                                <!-- Coordinate Hover & Opzioni Click -->
+                                <RowDefinition Height="Auto" />
+                                <!-- Lista Elementi uGUI Rilevati -->
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+
+                            <!-- 1. Stato VisionBridge -->
+                            <Border Grid.Row="0" Background="#27272A" CornerRadius="6" Padding="10,7" Margin="0,0,0,8">
+                                <StackPanel>
+                                    <TextBlock Text="{Binding VisionStatusText}" Foreground="#38BDF8" FontWeight="SemiBold" FontSize="12" TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Text="{Binding VisionCapabilitiesText}" Foreground="#A1A1AA" FontSize="11" Margin="0,2,0,0" TextWrapping="Wrap" />
+                                </StackPanel>
+                            </Border>
+
+                            <!-- 2. Pulsanti Cattura & Ispezione UI -->
+                            <Grid Grid.Row="1" Margin="0,0,0,8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+
+                                <Button Grid.Column="0" Content="📸 Cattura Frame"
+                                        Command="{Binding CaptureScreenshotCommand}"
+                                        Style="{StaticResource WorkbenchButtonStyle}"
+                                        Background="#0284C7" BorderBrush="#38BDF8"
+                                        Margin="0,0,4,0" Padding="0,7" />
+
+                                <Button Grid.Column="1" Content="🎯 Rileva Elementi uGUI"
+                                        Command="{Binding InspectUiElementsCommand}"
+                                        Style="{StaticResource WorkbenchButtonStyle}"
+                                        Background="#0D9488" BorderBrush="#14B8A6"
+                                        Margin="4,0,0,0" Padding="0,7" />
+                            </Grid>
+
+                            <!-- 3. Viewer Screenshot Interattivo (Hover per coordinate, Click per testare Virtual Mouse) -->
+                            <Border Grid.Row="2"
+                                    Background="#09090B"
+                                    BorderBrush="#3F3F46"
+                                    BorderThickness="1"
+                                    CornerRadius="5"
+                                    ClipToBounds="True">
+                                <Grid x:Name="ScreenshotViewerContainer"
+                                      Background="Transparent"
+                                      Cursor="Cross"
+                                      MouseMove="OnScreenshotImageMouseMove"
+                                      MouseLeftButtonDown="OnScreenshotImageMouseDown">
+
+                                    <Image x:Name="ScreenshotPreviewImage"
+                                           Source="{Binding ScreenshotImage}"
+                                           Stretch="Uniform"
+                                           HorizontalAlignment="Center"
+                                           VerticalAlignment="Center" />
+
+                                    <TextBlock Text="Nessun frame catturato.&#x0a;Premi 'Cattura Frame' per ispezionare e cliccare sul gioco."
+                                               TextAlignment="Center"
+                                               Foreground="#71717A"
+                                               FontSize="11.5"
+                                               HorizontalAlignment="Center"
+                                               VerticalAlignment="Center"
+                                               Visibility="{Binding HasScreenshot, Converter={x:Static controls:VisibilityConverters.InvertedBooleanToVisibility}}" />
+
+                                    <Border Background="#B91C1C" Padding="6,2" VerticalAlignment="Top" HorizontalAlignment="Center" Margin="0,4,0,0"
+                                            CornerRadius="3" Visibility="{Binding IsUniformImage, Converter={x:Static controls:VisibilityConverters.BooleanToVisibility}}">
+                                        <TextBlock Text="ATTENZIONE: Frame uniforme rilevato" FontSize="10" FontWeight="Bold" Foreground="White" />
+                                    </Border>
+                                </Grid>
+                            </Border>
+
+                            <!-- 4. Barra Coordinate Live & Opzione Click-to-Test -->
+                            <StackPanel Grid.Row="3" Margin="0,6,0,8">
+                                <Border Background="#09090B" BorderBrush="#27272A" BorderThickness="1" CornerRadius="4" Padding="8,4">
+                                    <TextBlock Text="{Binding HoverCoordinatesText}"
+                                               Foreground="#38BDF8"
+                                               FontFamily="Consolas"
+                                               FontSize="11"
+                                               TextTrimming="CharacterEllipsis" />
+                                </Border>
+
+                                <CheckBox IsChecked="{Binding SendClickOnImageTap}"
+                                          Foreground="#D4D4D8"
+                                          FontSize="11.5"
+                                          Margin="2,6,0,0"
+                                          Content="Cliccando sull'anteprima invia un click al gioco via CandiedVirtualMouse" />
+                            </StackPanel>
+
+                            <!-- 5. Lista Elementi uGUI Interattivi -->
+                            <Grid Grid.Row="4">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+
+                                <Grid Grid.Row="0" Margin="0,0,0,6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="150" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="{Binding UiInspectionSummary}" Foreground="#4ADE80" FontSize="11" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                    <TextBox Grid.Column="1"
+                                             Text="{Binding UiSearchFilter, UpdateSourceTrigger=PropertyChanged}"
+                                             Background="#09090B" Foreground="#F4F4F5" BorderBrush="#3F3F46"
+                                             Padding="6,3" FontSize="11"
+                                             ToolTip="Filtra elementi UI per testo o ID" />
+                                </Grid>
+
+                                <ListBox Grid.Row="1"
+                                         ItemsSource="{Binding UiElementItems}"
+                                         Background="#09090B"
+                                         BorderBrush="#27272A"
+                                         BorderThickness="1"
+                                         HorizontalContentAlignment="Stretch"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate DataType="{x:Type vm:UiElementItemViewModel}">
+                                            <Border Background="#18181B" CornerRadius="4" Padding="8,5" Margin="0,2">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <StackPanel Grid.Column="0" Margin="0,0,6,0">
+                                                        <TextBlock Text="{Binding DisplayLabel}" Foreground="#F4F4F5" FontWeight="SemiBold" FontSize="11.5" TextTrimming="CharacterEllipsis" />
+                                                        <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                                                            <TextBlock Text="{Binding Type}" Foreground="#38BDF8" FontSize="10.5" Margin="0,0,8,0" />
+                                                            <TextBlock Text="{Binding CoordinatesSummary}" Foreground="#A1A1AA" FontFamily="Consolas" FontSize="10.5" Margin="0,0,8,0" />
+                                                            <TextBlock Text="{Binding Ref1080Summary}" Foreground="#4ADE80" FontFamily="Consolas" FontSize="10.5" />
+                                                        </StackPanel>
+                                                    </StackPanel>
+                                                    <Button Grid.Column="1"
+                                                            Content="Clicca"
+                                                            Command="{Binding DataContext.ClickUiElementCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                            CommandParameter="{Binding}"
+                                                            Style="{StaticResource WorkbenchButtonStyle}"
+                                                            Padding="8,3" FontSize="11" VerticalAlignment="Center" />
+                                                </Grid>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                            </Grid>
+                        </Grid>
+                    </TabItem>
+
+                    <!-- ========================================================= -->
+                    <!-- TAB 2: SCENA & OGGETTI (Cameras, SpriteRenderers, TMP)    -->
+                    <!-- ========================================================= -->
+                    <TabItem Header="🔍 Scena &amp; Oggetti">
+                        <Grid Margin="0,8,0,0">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="115" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+
+                            <!-- 1. Barra Filtro & Pulsante Ispeziona Scena -->
+                            <Grid Grid.Row="0" Margin="0,0,0,8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+
+                                <TextBox Grid.Column="0"
+                                         Text="{Binding SceneFilterText, UpdateSourceTrigger=PropertyChanged}"
+                                         Background="#09090B" Foreground="#F4F4F5" BorderBrush="#3F3F46"
+                                         Padding="8,6" FontSize="12" VerticalContentAlignment="Center"
+                                         ToolTip="Filtra oggetti scena per nome o genitore (es. NPC, Menu, Button, Canvas)" />
+
+                                <Button Grid.Column="1"
+                                        Content="🔍 Ispeziona Scena"
+                                        Command="{Binding InspectSceneCommand}"
+                                        Style="{StaticResource WorkbenchButtonStyle}"
+                                        Background="#0284C7" BorderBrush="#38BDF8"
+                                        Margin="6,0,0,0" Padding="12,6" />
+                            </Grid>
+
+                            <!-- 2. Sommario Scena -->
+                            <TextBlock Grid.Row="1" Text="{Binding SceneSummaryText}" Foreground="#38BDF8" FontWeight="SemiBold" FontSize="11.5" Margin="0,0,0,6" />
+
+                            <!-- 3. Telecamere Attive -->
+                            <Border Grid.Row="2" Background="#09090B" BorderBrush="#27272A" BorderThickness="1" CornerRadius="5" Padding="6" Margin="0,0,0,8">
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="*" />
+                                    </Grid.RowDefinitions>
+                                    <TextBlock Grid.Row="0" Text="TELECAMERE ATTIVE" Foreground="#A1A1AA" FontSize="10.5" FontWeight="Bold" Margin="2,0,0,4" />
+                                    <ListBox Grid.Row="1"
+                                             ItemsSource="{Binding SceneCameras}"
+                                             Background="Transparent" BorderThickness="0"
+                                             HorizontalContentAlignment="Stretch">
+                                        <ListBox.ItemTemplate>
+                                            <DataTemplate DataType="{x:Type vm:SceneCameraItemViewModel}">
+                                                <Grid Margin="0,1">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Grid.Column="0" Text="{Binding Name}" Foreground="#F4F4F5" FontWeight="SemiBold" FontSize="11" TextTrimming="CharacterEllipsis" />
+                                                    <TextBlock Grid.Column="1" Text="{Binding ProjectionSummary}" Foreground="#38BDF8" FontFamily="Consolas" FontSize="10.5" Margin="8,0" />
+                                                    <TextBlock Grid.Column="2" Text="{Binding DepthSummary}" Foreground="#4ADE80" FontFamily="Consolas" FontSize="10.5" />
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
+                                </Grid>
+                            </Border>
+
+                            <!-- 4. Renderer Attivi (SpriteRenderer, MeshRenderer, TextMeshPro) -->
+                            <Border Grid.Row="3" Background="#09090B" BorderBrush="#27272A" BorderThickness="1" CornerRadius="5" Padding="6">
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="*" />
+                                    </Grid.RowDefinitions>
+                                    <TextBlock Grid.Row="0" Text="RENDERER ATTIVI (SPRITE / MESH / TMP / PARTICLE)" Foreground="#A1A1AA" FontSize="10.5" FontWeight="Bold" Margin="2,0,0,4" />
+                                    <ListBox Grid.Row="1"
+                                             ItemsSource="{Binding SceneRenderers}"
+                                             Background="Transparent" BorderThickness="0"
+                                             HorizontalContentAlignment="Stretch"
+                                             ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                                        <ListBox.ItemTemplate>
+                                            <DataTemplate DataType="{x:Type vm:SceneRendererItemViewModel}">
+                                                <Border Background="#18181B" CornerRadius="4" Padding="8,5" Margin="0,2">
+                                                    <StackPanel>
+                                                        <Grid>
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="*" />
+                                                                <ColumnDefinition Width="Auto" />
+                                                            </Grid.ColumnDefinitions>
+                                                            <TextBlock Grid.Column="0" Text="{Binding HierarchyDisplay}" Foreground="#F4F4F5" FontWeight="SemiBold" FontSize="11.5" TextTrimming="CharacterEllipsis" ToolTip="{Binding HierarchyDisplay}" />
+                                                            <TextBlock Grid.Column="1" Text="{Binding RendererType}" Foreground="#38BDF8" FontSize="10.5" FontWeight="SemiBold" Margin="6,0,0,0" />
+                                                        </Grid>
+                                                        <TextBlock Text="{Binding SortingSummary}" Foreground="#4ADE80" FontFamily="Consolas" FontSize="10.5" Margin="0,2,0,0" />
+                                                        <TextBlock Text="{Binding BoundsSummary}" Foreground="#A1A1AA" FontFamily="Consolas" FontSize="10.5" />
+                                                        <TextBlock Text="{Binding ShaderSummary}" Foreground="#71717A" FontSize="10" TextTrimming="CharacterEllipsis" />
+                                                    </StackPanel>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
+                                </Grid>
+                            </Border>
+                        </Grid>
+                    </TabItem>
+
+                    <!-- ========================================================= -->
+                    <!-- TAB 3: CONSOLE LOG (Filtro Live, Errori & Colorazione)    -->
+                    <!-- ========================================================= -->
+                    <TabItem Header="📜 Console Log">
+                        <Grid Margin="0,8,0,0">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+
+                            <!-- 1. Filtro ricerca testuale e pulsanti Azione -->
+                            <Grid Grid.Row="0" Margin="0,0,0,6">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+
+                                <TextBox Grid.Column="0"
+                                         Text="{Binding LogSearchText, UpdateSourceTrigger=PropertyChanged}"
+                                         Background="#09090B" Foreground="#F4F4F5" BorderBrush="#3F3F46"
+                                         Padding="8,5" FontSize="11.5" VerticalContentAlignment="Center"
+                                         ToolTip="Cerca nei log BepInEx / VisionBridge / Host" />
+
+                                <Button Grid.Column="1" Content="Copia" Command="{Binding CopyLogsCommand}"
+                                        Style="{StaticResource WorkbenchButtonStyle}"
+                                        Margin="6,0,0,0" Padding="10,4" FontSize="11" />
+
+                                <Button Grid.Column="2" Content="Pulisci" Command="{Binding ClearLogsCommand}"
+                                        Style="{StaticResource WorkbenchButtonStyle}"
+                                        Margin="4,0,0,0" Padding="10,4" FontSize="11" />
+                            </Grid>
+
+                            <!-- 2. Checkbox Solo Errori / Warning -->
+                            <CheckBox Grid.Row="1"
+                                      IsChecked="{Binding OnlyWarningsAndErrors}"
+                                      Content="Mostra solo Warning ed Errori ([Warning], [Error], Exception)"
+                                      Foreground="#D4D4D8" FontSize="11.5" Margin="2,0,0,6" />
+
+                            <!-- 3. Lista Log Colorata -->
+                            <ListBox Grid.Row="2"
+                                     x:Name="LogsList"
+                                     ItemsSource="{Binding FilteredLogEntries}"
+                                     Background="#09090B"
+                                     BorderBrush="#27272A"
+                                     BorderThickness="1"
+                                     FontFamily="Consolas"
+                                     FontSize="11"
+                                     ScrollViewer.HorizontalScrollBarVisibility="Auto">
+                                <ListBox.ItemContainerStyle>
+                                    <Style TargetType="ListBoxItem">
+                                        <Setter Property="Padding" Value="4,1" />
+                                    </Style>
+                                </ListBox.ItemContainerStyle>
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate DataType="{x:Type vm:StudioLogEntry}">
+                                        <TextBlock Text="{Binding FullText}" Foreground="{Binding ForegroundHex}" />
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </Grid>
+                    </TabItem>
+
+                </TabControl>
+            </Border>
+        </Grid>
+    </Grid>
+</Window>

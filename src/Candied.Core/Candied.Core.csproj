@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Candied.Core</RootNamespace>
+    <AssemblyName>Candied.Core</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Candied.Primitives\Candied.Primitives.csproj" />
+    <ProjectReference Include="..\Candied.VisionBridge.Protocol\Candied.VisionBridge.Protocol.csproj" />
+  </ItemGroup>
+</Project>
