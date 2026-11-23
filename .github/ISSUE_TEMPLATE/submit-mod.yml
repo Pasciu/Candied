@@ -1,0 +1,63 @@
+name: Submit a Candied Mod
+description: Propose an open-source Unity Mono mod built with Candied to be listed on the Candied Mod Hub.
+title: "[Mod Submission] "
+labels: ["mod-submission"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for sharing your mod! Please note:
+        - Your mod must be **open source** on GitHub and remains **100% your property** under your chosen license.
+        - **No game DLLs or extracted vanilla game assets** may be redistributed.
+        - Compiled releases (`.dll` / `.zip`) must be hosted on your own **GitHub Releases**.
+  - type: input
+    id: mod_title
+    attributes:
+      label: Mod Name
+      placeholder: e.g. NPC Designer
+    validations:
+      required: true
+  - type: input
+    id: game_name
+    attributes:
+      label: Target Game (Unity Mono, Single-Player)
+      placeholder: e.g. Potion Craft: Alchemist Simulator
+    validations:
+      required: true
+  - type: input
+    id: repo_url
+    attributes:
+      label: Public GitHub Repository URL
+      placeholder: https://github.com/username/my-mod
+    validations:
+      required: true
+  - type: input
+    id: release_url
+    attributes:
+      label: GitHub Releases Download URL
+      placeholder: https://github.com/username/my-mod/releases/tag/v1.0.0
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Short Summary & Features
+      placeholder: Describe what your mod does...
+    validations:
+      required: true
+  - type: textarea
+    id: ai_workflow
+    attributes:
+      label: Candied & AI Workflow Notes
+      description: Which AI agent/model and Candied MCP tools did you use? Any interesting Harmony hooks?
+      placeholder: Used inspect, decompile, search-code, inspect-scene-objects, and build...
+    validations:
+      required: true
+  - type: textarea
+    id: generated_markdown
+    attributes:
+      label: Optional — Generated Mod Card Markdown (from /submit)
+      description: If you used the generator on the Candied Mod Hub /submit page, paste it here to speed up publishing.
+      render: markdown
+    validations:
+      required: false
