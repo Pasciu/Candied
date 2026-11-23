@@ -81,6 +81,12 @@ I want you to inspect the game located at `C:\Games\SampleGame` and search for l
 
 ---
 
+## Note on Multiplayer & Anti-Cheat
+
+Candied has never been tested on multiplayer games or titles with anti-cheat systems. Modding online games with anti-cheat can carry a risk of account bans, so use it at your own discretion—the author cannot take responsibility for any bans or penalties.
+
+---
+
 ## 📄 License & Mod Ownership
 
 * **Candied** is licensed under the **[GNU Affero General Public License v3.0 (AGPL-3.0)](./LICENSE)** — Copyright (c) 2026 Pasciu.

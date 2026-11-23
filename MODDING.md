@@ -11,6 +11,13 @@ This guide is the operational reference for AI agents using **Candied** to rever
 > *unproven* below is implemented but has never been observed working on a real game.
 > On any other game, treat the first click as an experiment and report honestly if it has no effect.
 
+### Multiplayer & Anti-Cheat Warning (Required Agent Check)
+
+Candied has **never been tested on multiplayer games or titles with anti-cheat systems** (e.g. Easy Anti-Cheat, BattlEye, VAC, Riot Vanguard, etc.).
+Before running `setup`, deploying a mod DLL, or launching a target game that is a known multiplayer title or shows anti-cheat files/services during `inspect`:
+1. **Pause and calmly inform the user** that Candied hasn't been tested on multiplayer or anti-cheat protected games and that modding online titles can carry a risk of account bans.
+2. Clarify that they proceed at their own discretion (the author cannot take responsibility for bans or penalties) and **ask for explicit confirmation** before installing BepInEx or modifying the game directory.
+
 ---
 
 ## 1. Architectural Mental Model
