@@ -8,6 +8,7 @@ Candied has transitioned to a **modular, offline-first progressive reverse engin
   - `dotnet format --verify-no-changes`: 0 violations
   - `dotnet build --configuration Release /p:TreatWarningsAsErrors=true`: 0 warnings, 0 errors
   - `dotnet test --configuration Release`: 255 passing tests across Architecture (6) and Unit/Integration/E2E (249) slices, plus 5 explicit interactive/live game tests.
+  - `dotnet list package --vulnerable --include-transitive`: 0 vulnerable packages across all 10 projects (`Microsoft.Data.Sqlite` upgraded to `9.0.23`, resolving transitive `GHSA-2m69-gcr7-jv3q`); GitHub Actions CI workflow scoped with least-privilege `permissions: contents: read`.
   - **29 MCP tools advertised** (added `search-code`, `add-reference`, `inspect-runtime-assets`; upgraded `query`, `type`, `discover-assets`, `inspect-scene-objects`, `build`, `game-launch`, `scene-info`). See [`docs/tool-ergonomics-roadmap.md`](./tool-ergonomics-roadmap.md) and [`docs/mcp-update-guide.md`](./mcp-update-guide.md). Workspace root resolution is anchored to the repository root via `AppContext.BaseDirectory` traversal (`Candied.sln` / `.git`) so relative paths in `scaffold` and `build` never resolve inside external IDE folders.
 
 ---

@@ -8,7 +8,7 @@
 * **External Packages:**
   * `ICSharpCode.Decompiler` (ILSpy whole-project decompiler engine)
   * `Microsoft.CodeAnalysis.CSharp` (Roslyn AST parser)
-  * `Microsoft.Data.Sqlite` (Fast local SQLite storage)
+  * `Microsoft.Data.Sqlite` (`9.0.23`, fast local SQLite storage with patched native SQLite runtime)
   * `AssetsTools.NET` (Unity .assets and AssetBundle deserializer)
   * `AssetsTools.NET.Texture` (Texture/Sprite decoder)
   * `StbImageWriteSharp` (Lightweight PNG image serializer)
