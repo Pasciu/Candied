@@ -87,6 +87,18 @@ Candied has never been tested on multiplayer games or titles with anti-cheat sys
 
 ---
 
+## Credits & Open-Source Ecosystem
+
+Candied stands on the shoulders of fantastic open-source projects—please consider checking them out and supporting their maintainers too:
+
+* [**BepInEx**](https://github.com/BepInEx/BepInEx) — Unity / XNA game patcher and plugin framework.
+* [**HarmonyX**](https://github.com/BepInEx/HarmonyX) (based on [**Harmony**](https://github.com/pardeike/Harmony)) — runtime method patching for .NET and Mono.
+* [**ILSpy / ICSharpCode.Decompiler**](https://github.com/icsharpcode/ILSpy) — .NET assembly decompiler engine.
+* [**AssetsTools.NET**](https://github.com/nesrak1/AssetsTools.NET) — offline Unity `.assets` and AssetBundle reader and texture decoder.
+* [**Roslyn (`Microsoft.CodeAnalysis.CSharp`)**](https://github.com/dotnet/roslyn) — C# syntax analysis for symbol indexing.
+
+---
+
 ## 📄 License & Mod Ownership
 
 * **Candied** is licensed under the **[GNU Affero General Public License v3.0 (AGPL-3.0)](./LICENSE)** with a **[Section 7 Unity / BepInEx Linking & Mod Output Exception](./LICENSE-EXCEPTION.txt)** — Copyright (c) 2026 Pasciu.
