@@ -1,0 +1,26 @@
+Additional Permission under GNU AGPL version 3 section 7
+
+Copyright (c) 2026 Pasciu
+
+If you modify this Program, or any covered work, by linking, combining,
+loading at runtime, or interfacing it (including Candied.VisionBridge and
+any generated project templates) with:
+
+  1. Unity Engine runtimes, assemblies, or reference modules
+     (including UnityEngine.*, Unity.*, and UnityEngine.Modules);
+  2. BepInEx, Harmony / HarmonyX, or compatible modding loaders;
+  3. Any legitimately owned Unity game binary, assembly, or asset archive;
+
+the licensors of this Program grant you additional permission to compile,
+link, load, run, and convey the resulting work without requiring those
+third-party runtimes, loaders, or games to be licensed under the GNU AGPLv3.
+
+Furthermore, any standalone mod, Harmony patch, source file, configuration,
+or original asset authored by a user with the assistance of Candied (including
+code generated from Candied's built-in scaffolding templates) is NOT considered
+a derivative work of Candied for licensing purposes and remains the sole
+property of its author under whatever license the author chooses.
+
+This additional permission applies exclusively to the interfacing, linking,
+and user-mod output described above; modifications to Candied itself remain
+governed by the GNU Affero General Public License v3.0 (see LICENSE).

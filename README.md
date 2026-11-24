@@ -89,5 +89,6 @@ Candied has never been tested on multiplayer games or titles with anti-cheat sys
 
 ## 📄 License & Mod Ownership
 
-* **Candied** is licensed under the **[GNU Affero General Public License v3.0 (AGPL-3.0)](./LICENSE)** — Copyright (c) 2026 Pasciu.
+* **Candied** is licensed under the **[GNU Affero General Public License v3.0 (AGPL-3.0)](./LICENSE)** with a **[Section 7 Unity / BepInEx Linking & Mod Output Exception](./LICENSE-EXCEPTION.txt)** — Copyright (c) 2026 Pasciu.
+* **Unity & BepInEx Linking:** The Section 7 exception explicitly permits compiling, linking, loading at runtime, and distributing Candied (including `Candied.VisionBridge`) alongside Unity Engine runtimes, BepInEx, HarmonyX, and legitimately owned Unity games.
 * **Your Mods Belong to You:** Any mod, Harmony patch, template output, or original asset you create using Candied remains **100% the property of its author / legitimate user**, under whatever license you choose. Using Candied as a modding workbench does not place your mods under the AGPL-3.0 license.
