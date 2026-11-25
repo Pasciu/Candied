@@ -1,9 +1,12 @@
 # Candied
 
+[![Website](https://img.shields.io/badge/Website-candied.pasciu.dev-E64C5C?style=flat)](https://candied.pasciu.dev)
 [![.NET 9](https://img.shields.io/badge/.NET-9.0-512BD4?logo=dotnet)](https://dotnet.microsoft.com/)
 [![BepInEx](https://img.shields.io/badge/BepInEx-5.4.21-orange)](https://github.com/BepInEx/BepInEx)
 [![HarmonyX](https://img.shields.io/badge/HarmonyX-Ready-blue)](https://github.com/BepInEx/HarmonyX)
 [![Protocol](https://img.shields.io/badge/MCP-2024--11--05-green)](https://modelcontextprotocol.io/)
+
+> **Website, Docs & Community Mod Hub:** [**https://candied.pasciu.dev**](https://candied.pasciu.dev)
 
 An automated **Modding Wrapper** for Unity Mono games using the **BepInEx** framework and **HarmonyX**.
 
