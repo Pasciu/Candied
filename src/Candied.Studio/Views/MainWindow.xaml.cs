@@ -7,6 +7,7 @@ using System.Windows.Media;
 using Candied.Studio.Native;
 using Candied.Studio.Services;
 using Candied.Studio.ViewModels;
+using Candied.Vision.Hosting;
 
 namespace Candied.Studio.Views;
 
@@ -31,7 +32,6 @@ public partial class MainWindow : Window
 
         GameHwndHost.HostResized += (pxW, pxH) => _viewModel.OnHostResized(pxW, pxH);
 
-        // Auto-scroll filtered logs
         if (_viewModel.FilteredLogEntries is INotifyCollectionChanged notifyCollection)
         {
             notifyCollection.CollectionChanged += (_, _) =>
@@ -54,7 +54,7 @@ public partial class MainWindow : Window
     private void OnViewportPresetOrSidebarChanged()
     {
         SidebarColumn.Width = _viewModel.IsSidebarVisible
-            ? new GridLength(470)
+            ? new GridLength(485)
             : new GridLength(0);
 
         Dispatcher.InvokeAsync(UpdateStageViewportSize, System.Windows.Threading.DispatcherPriority.Render);
@@ -113,26 +113,21 @@ public partial class MainWindow : Window
             ScreenshotViewerContainer.ActualHeight);
     }
 
-    /// <summary>
-    /// Forces the window to be displayed, normalized, clamped within the monitor work area, and brought to foreground.
-    /// Overrides any SW_HIDE passed via Win32 STARTUPINFO from parent processes.
-    /// </summary>
     public void EnsureVisibleAndActive()
     {
         try
         {
-            // 1. Normalize if minimized
             if (WindowState == WindowState.Minimized)
             {
                 WindowState = WindowState.Normal;
             }
 
-            // 2. Clamp dimensions and position to current monitor work area
             var workArea = SystemParameters.WorkArea;
             if (Width > workArea.Width)
             {
                 Width = Math.Max(MinWidth, workArea.Width - 40);
             }
+
             if (Height > workArea.Height)
             {
                 Height = Math.Max(MinHeight, workArea.Height - 40);
@@ -156,15 +151,12 @@ public partial class MainWindow : Window
                 }
             }
 
-            // 3. Ensure Win32 HWND exists
             var helper = new WindowInteropHelper(this);
             IntPtr hwnd = helper.EnsureHandle();
 
-            // 4. Override STARTUPINFO wShowWindow: ShowWindow with SW_SHOWNORMAL (1) and SW_RESTORE (9)
             Win32Native.ShowWindow(hwnd, Win32Native.SW_SHOWNORMAL);
             Win32Native.ShowWindow(hwnd, Win32Native.SW_RESTORE);
 
-            // 5. Bring window to top and show without passing unscaled DIPs to Win32
             Win32Native.SetWindowPos(
                 hwnd,
                 Win32Native.HWND_TOP,
@@ -178,10 +170,8 @@ public partial class MainWindow : Window
             Show();
             Activate();
 
-            // 6. Force foreground
             Win32Native.SetForegroundWindow(hwnd);
 
-            // 7. Verify Win32 status and log with DPI awareness
             bool isVisible = Win32Native.IsWindowVisible(hwnd);
             Win32Native.GetWindowRect(hwnd, out var rect);
             var dpi = VisualTreeHelper.GetDpi(this);
@@ -198,6 +188,6 @@ public partial class MainWindow : Window
 
     private void OnWindowClosed(object? sender, EventArgs e)
     {
-        _ = _viewModel.StopGameAsync();
+        _ = _viewModel.StopTargetAsync();
     }
 }

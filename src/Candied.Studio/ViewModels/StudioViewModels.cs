@@ -1,20 +1,22 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
-using Candied.Studio.Services;
-using Candied.VisionBridge.Protocol;
+using System.Linq;
+using Candied.Vision.Controls;
+using Candied.Vision.Hosting;
+using Candied.Vision.Protocol;
 
 namespace Candied.Studio.ViewModels;
 
 public sealed record ViewportPresetOption(string Key, string DisplayName)
 {
-    public static IReadOnlyList<ViewportPresetOption> DefaultPresets { get; } = new[]
-    {
+    public static IReadOnlyList<ViewportPresetOption> DefaultPresets { get; } =
+    [
         new ViewportPresetOption("auto_16_9", "Auto-Fit 16:9 (Proporzioni 1080p)"),
         new ViewportPresetOption("960x540", "960×540 (qHD Compact • 50% 1080p)"),
         new ViewportPresetOption("1280x720", "1280×720 (HD 16:9 • 67% 1080p)"),
         new ViewportPresetOption("1920x1080", "1920×1080 (Full HD 16:9)")
-    };
+    ];
 }
 
 public sealed record StudioLogEntry(
@@ -47,7 +49,10 @@ public sealed record StudioLogEntry(
 
     public static string ClassifyLevel(string message)
     {
-        if (string.IsNullOrEmpty(message)) return "Info";
+        if (string.IsNullOrEmpty(message))
+        {
+            return "Info";
+        }
 
         if (message.Contains("[Error", StringComparison.OrdinalIgnoreCase) ||
             message.Contains("[Fatal", StringComparison.OrdinalIgnoreCase) ||
@@ -66,7 +71,8 @@ public sealed record StudioLogEntry(
         }
 
         if (message.Contains("[VisionBridge]", StringComparison.OrdinalIgnoreCase) ||
-            message.Contains("[Candied.VisionBridge]", StringComparison.OrdinalIgnoreCase) ||
+            message.Contains("[SensorBridge]", StringComparison.OrdinalIgnoreCase) ||
+            message.Contains("[Candied.Vision", StringComparison.OrdinalIgnoreCase) ||
             message.Contains("[Host]", StringComparison.OrdinalIgnoreCase))
         {
             return "Bridge";
@@ -104,6 +110,8 @@ public sealed record UiElementItemViewModel(
 {
     public static UiElementItemViewModel FromDto(VisionUiElementDto dto, int frameWidth, int frameHeight)
     {
+        ArgumentNullException.ThrowIfNull(dto);
+
         float cx = dto.PixelRect.X + (dto.PixelRect.Width * 0.5f);
         float cy = dto.PixelRect.Y + (dto.PixelRect.Height * 0.5f);
 
@@ -138,6 +146,8 @@ public sealed record SceneCameraItemViewModel(
 {
     public static SceneCameraItemViewModel FromDto(VisionSceneCameraDto dto)
     {
+        ArgumentNullException.ThrowIfNull(dto);
+
         string proj = dto.Orthographic
             ? $"Ortho (Size {dto.OrthographicSize:F2})"
             : "Perspective";
@@ -154,40 +164,77 @@ public sealed record SceneCameraItemViewModel(
     }
 }
 
-public sealed record SceneRendererItemViewModel(
+public sealed record SceneNodeItemViewModel(
     string Name,
     string HierarchyDisplay,
-    string RendererType,
-    string SortingSummary,
+    string NodeType,
+    string ComponentsSummary,
     string BoundsSummary,
-    string ShaderSummary)
+    string AttributesSummary)
 {
-    public static SceneRendererItemViewModel FromDto(VisionSceneRendererDto dto)
+    public static SceneNodeItemViewModel FromDto(VisionSceneNodeDto dto)
     {
-        string hierarchy = string.IsNullOrWhiteSpace(dto.ParentName)
-            ? dto.Name
-            : $"{dto.ParentName} / {dto.Name}";
+        ArgumentNullException.ThrowIfNull(dto);
 
-        string layerName = string.IsNullOrWhiteSpace(dto.SortingLayerName) ? "Default" : dto.SortingLayerName;
-        string sorting = $"Layer: {layerName} (Order {dto.SortingOrder})";
+        string hierarchy = !string.IsNullOrWhiteSpace(dto.FullPath)
+            ? dto.FullPath
+            : (string.IsNullOrWhiteSpace(dto.ParentName) ? dto.Name : $"{dto.ParentName} / {dto.Name}");
 
-        float cx = dto.Center != null && dto.Center.Length > 0 ? dto.Center[0] : 0f;
-        float cy = dto.Center != null && dto.Center.Length > 1 ? dto.Center[1] : 0f;
-        float ex = dto.Extents != null && dto.Extents.Length > 0 ? dto.Extents[0] : 0f;
-        float ey = dto.Extents != null && dto.Extents.Length > 1 ? dto.Extents[1] : 0f;
+        string comps = dto.Components != null && dto.Components.Count > 0
+            ? string.Join(", ", dto.Components.Take(4))
+            : dto.NodeType;
+
+        float cx = dto.BoundsCenter != null && dto.BoundsCenter.Length > 0 ? dto.BoundsCenter[0] : 0f;
+        float cy = dto.BoundsCenter != null && dto.BoundsCenter.Length > 1 ? dto.BoundsCenter[1] : 0f;
+        float ex = dto.BoundsExtents != null && dto.BoundsExtents.Length > 0 ? dto.BoundsExtents[0] : 0f;
+        float ey = dto.BoundsExtents != null && dto.BoundsExtents.Length > 1 ? dto.BoundsExtents[1] : 0f;
 
         string bounds = $"Center: ({cx:F2}, {cy:F2}) • Size: ({ex * 2:F2}×{ey * 2:F2})";
 
-        string shader = dto.Materials != null && dto.Materials.Count > 0
-            ? $"{dto.Materials[0].MaterialName} [{dto.Materials[0].ShaderName}]"
+        string attrs = dto.Attributes != null && dto.Attributes.Count > 0
+            ? string.Join(" • ", dto.Attributes.Take(4).Select(kv => $"{kv.Key}: {kv.Value}"))
             : "-";
 
-        return new SceneRendererItemViewModel(
+        return new SceneNodeItemViewModel(
             dto.Name,
             hierarchy,
-            dto.RendererType,
-            sorting,
+            dto.NodeType,
+            comps,
             bounds,
-            shader);
+            attrs);
+    }
+}
+
+public sealed record ControlActionItemViewModel(
+    string ActionName,
+    string DisplayName,
+    string Source,
+    string BindingsSummary)
+{
+    public static ControlActionItemViewModel FromEntry(ControlActionEntry entry)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+
+        string summary = entry.Bindings.Count == 0
+            ? "(Nessun binding)"
+            : string.Join(" | ", entry.Bindings.Select(FormatBinding));
+
+        return new ControlActionItemViewModel(
+            entry.ActionName,
+            entry.DisplayName,
+            entry.Source,
+            summary);
+    }
+
+    private static string FormatBinding(InputBinding b)
+    {
+        return b.Channel switch
+        {
+            InputChannel.Keyboard => $"Key: {b.Key}",
+            InputChannel.Gamepad => $"Pad: {b.GamepadButton}",
+            _ => b.NormalizedX.HasValue && b.NormalizedY.HasValue
+                ? $"Mouse({b.MouseButton}) @ ({b.NormalizedX.Value:F2}, {b.NormalizedY.Value:F2})"
+                : $"Mouse({b.MouseButton})"
+        };
     }
 }

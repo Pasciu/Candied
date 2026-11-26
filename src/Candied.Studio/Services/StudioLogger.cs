@@ -2,43 +2,17 @@ using System;
 using System.Globalization;
 using System.IO;
 using System.Text;
+using Candied.Vision.Hosting;
 
 namespace Candied.Studio.Services;
 
-/// <summary>
-/// Thread-safe logger writing startup events and fatal exceptions to %APPDATA%/Candied/logs/studio.log.
-/// </summary>
 internal static class StudioLogger
 {
     private static readonly object LockObj = new();
 
-    public static string GetLogsDirectory()
-    {
-        string? overrideDir = Environment.GetEnvironmentVariable("CANDIED_USER_CONFIG_DIR");
-        string baseDir;
-        if (!string.IsNullOrWhiteSpace(overrideDir))
-        {
-            baseDir = overrideDir;
-        }
-        else
-        {
-            string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-            if (string.IsNullOrWhiteSpace(appData))
-            {
-                appData = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config");
-            }
-            baseDir = Path.Combine(appData, "Candied");
-        }
+    public static string GetLogsDirectory() => VisionConfigPaths.GetLogsDirectory();
 
-        string logDir = Path.Combine(baseDir, "logs");
-        if (!Directory.Exists(logDir))
-        {
-            Directory.CreateDirectory(logDir);
-        }
-        return logDir;
-    }
-
-    public static string LogFilePath => Path.Combine(GetLogsDirectory(), "studio.log");
+    public static string LogFilePath => VisionConfigPaths.GetStudioLogPath();
 
     public static void Log(string level, string message, Exception? ex = null)
     {
@@ -58,7 +32,6 @@ internal static class StudioLogger
         }
         catch
         {
-            // Logging must never crash the application
         }
     }
 

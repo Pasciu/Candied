@@ -2,27 +2,41 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Net;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Interop;
-using Candied.Core.Ports;
 using Candied.Studio.Native;
 using Candied.Studio.ViewModels;
 using Candied.Studio.Views;
+using Candied.Vision.Hosting;
+using Candied.Vision.Models;
+using Candied.Vision.Ports;
+using Candied.Vision.Protocol;
 
 namespace Candied.Studio.Services;
 
 /// <summary>
-/// Lightweight local HTTP server in Candied Studio for MCP automation and remote control.
+/// Local HTTP server inside Candied Studio exposing 2-tier Vision &amp; 3-channel Input endpoints
+/// for any hosted PC game or emulator window.
 /// </summary>
-public sealed class StudioHttpServer : IDisposable
+internal sealed class StudioHttpServer : IDisposable
 {
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) }
+    };
+
     private readonly IStudioSessionManager _sessionManager;
+    private readonly IVisionSensorClient _sensorClient;
     private readonly MainWindowViewModel _viewModel;
-    private readonly IUnityGameHostController _controller;
+    private readonly ITargetHostController _controller;
 
     private HttpListener? _listener;
     private int _port;
@@ -36,39 +50,34 @@ public sealed class StudioHttpServer : IDisposable
 
     public StudioHttpServer(
         IStudioSessionManager sessionManager,
+        IVisionSensorClient sensorClient,
         MainWindowViewModel viewModel,
-        IUnityGameHostController controller)
+        ITargetHostController controller)
     {
         _sessionManager = sessionManager ?? throw new ArgumentNullException(nameof(sessionManager));
+        _sensorClient = sensorClient ?? throw new ArgumentNullException(nameof(sensorClient));
         _viewModel = viewModel ?? throw new ArgumentNullException(nameof(viewModel));
         _controller = controller ?? throw new ArgumentNullException(nameof(controller));
 
-        _controller.ProcessExited += OnGameProcessExited;
+        _controller.ProcessExited += OnTargetProcessExited;
     }
 
     public void Start()
     {
-        if (IsListening) return;
+        if (IsListening)
+        {
+            return;
+        }
 
-        _port = UnityGameHostController.GetAvailableTcpPort();
-        _token = Guid.NewGuid().ToString("N");
+        _port = TargetHostController.GetAvailableTcpPort();
+        _token = RandomNumberGenerator.GetHexString(32, lowercase: true);
         _cts = new CancellationTokenSource();
 
         _listener = new HttpListener();
         _listener.Prefixes.Add($"http://127.0.0.1:{_port}/");
         _listener.Start();
 
-        // Record active session outside repo
-        _sessionManager.WriteSession(new StudioSessionInfo(
-            StudioPid: Environment.ProcessId,
-            StudioPort: _port,
-            StudioToken: _token,
-            ActiveGameName: null,
-            GamePid: null,
-            BridgePort: null,
-            BridgeToken: null
-        ));
-
+        WriteCurrentSession();
         _listenTask = Task.Run(() => ListenLoopAsync(_cts.Token));
     }
 
@@ -91,7 +100,10 @@ public sealed class StudioHttpServer : IDisposable
             }
             catch
             {
-                if (ct.IsCancellationRequested) break;
+                if (ct.IsCancellationRequested)
+                {
+                    break;
+                }
             }
         }
     }
@@ -103,16 +115,31 @@ public sealed class StudioHttpServer : IDisposable
 
         try
         {
-            // Verify secret token (never logged)
+            string? hostHeader = req.Headers["Host"];
+            if (string.IsNullOrEmpty(hostHeader) || !hostHeader.StartsWith("127.0.0.1", StringComparison.OrdinalIgnoreCase))
+            {
+                resp.StatusCode = (int)HttpStatusCode.Forbidden;
+                resp.Close();
+                return;
+            }
+
+            string? originHeader = req.Headers["Origin"];
+            if (!string.IsNullOrEmpty(originHeader) && !originHeader.StartsWith("http://127.0.0.1", StringComparison.OrdinalIgnoreCase))
+            {
+                resp.StatusCode = (int)HttpStatusCode.Forbidden;
+                resp.Close();
+                return;
+            }
+
             string? tokenHeader = req.Headers["X-Candied-Studio-Token"];
-            if (string.IsNullOrEmpty(tokenHeader) || !string.Equals(tokenHeader, _token, StringComparison.Ordinal))
+            if (string.IsNullOrEmpty(tokenHeader) || !FixedTimeTokenEquals(tokenHeader, _token))
             {
                 resp.StatusCode = (int)HttpStatusCode.Unauthorized;
                 resp.Close();
                 return;
             }
 
-            var path = req.Url?.AbsolutePath.ToLowerInvariant() ?? string.Empty;
+            string path = req.Url?.AbsolutePath.ToLowerInvariant() ?? string.Empty;
 
             if (req.HttpMethod == "GET" && path == "/status")
             {
@@ -132,6 +159,18 @@ public sealed class StudioHttpServer : IDisposable
                 return;
             }
 
+            if (req.HttpMethod == "GET" && path == "/screenshot")
+            {
+                await HandleGetScreenshotAsync(resp, ct).ConfigureAwait(false);
+                return;
+            }
+
+            if (req.HttpMethod == "POST" && path == "/input")
+            {
+                await HandlePostInputAsync(req, resp, ct).ConfigureAwait(false);
+                return;
+            }
+
             resp.StatusCode = (int)HttpStatusCode.NotFound;
             resp.Close();
         }
@@ -140,43 +179,272 @@ public sealed class StudioHttpServer : IDisposable
             try
             {
                 resp.StatusCode = (int)HttpStatusCode.InternalServerError;
-                var errBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { error = ex.Message }));
+                byte[] errBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { error = ex.Message }, JsonOptions));
                 resp.ContentType = "application/json";
                 resp.ContentLength64 = errBytes.Length;
                 await resp.OutputStream.WriteAsync(errBytes, ct).ConfigureAwait(false);
                 resp.Close();
             }
-            catch { }
+            catch
+            {
+            }
         }
     }
 
     private async Task HandleGetStatusAsync(HttpListenerResponse resp, CancellationToken ct)
     {
         var windowInfo = GetWindowInfo();
+        var activeTier = !_controller.IsRunning
+            ? VisionTier.None
+            : (_viewModel.IsSensorConnected ? VisionTier.SensorBridge : VisionTier.BaseWindow);
 
         var statusDto = new
         {
             isRunning = _controller.IsRunning,
-            activeGameName = _controller.CurrentGameName,
-            gamePid = _controller.ActiveGameProcessId,
-            bridgePort = _controller.ActiveVisionBridgePort,
+            activeTargetName = _controller.CurrentTargetName,
+            activeTargetPath = _controller.CurrentTargetPath,
+            activeRunnerPath = _controller.CurrentRunnerPath,
+            targetPid = _controller.ActiveTargetProcessId,
+            sensorPort = _controller.ActiveSensorPort,
             embeddingMode = _controller.EmbeddingMode,
-            isVisionConnected = _viewModel.IsVisionConnected,
-            gameWidth = _controller.TargetGameWidth,
-            gameHeight = _controller.TargetGameHeight,
+            activeVisionTier = activeTier,
+            isSensorConnected = _viewModel.IsSensorConnected,
+            window = windowInfo,
+            targetWidth = _controller.TargetWidth,
+            targetHeight = _controller.TargetHeight,
             panelWidth = _controller.LastPanelWidth,
-            panelHeight = _controller.LastPanelHeight,
-            window = windowInfo
+            panelHeight = _controller.LastPanelHeight
         };
 
-        var json = JsonSerializer.Serialize(statusDto);
-        var bytes = Encoding.UTF8.GetBytes(json);
+        string json = JsonSerializer.Serialize(statusDto, JsonOptions);
+        byte[] bytes = Encoding.UTF8.GetBytes(json);
 
         resp.StatusCode = (int)HttpStatusCode.OK;
         resp.ContentType = "application/json";
         resp.ContentLength64 = bytes.Length;
         await resp.OutputStream.WriteAsync(bytes, ct).ConfigureAwait(false);
         resp.Close();
+    }
+
+    private async Task HandlePostLaunchAsync(HttpListenerRequest req, HttpListenerResponse resp, CancellationToken ct)
+    {
+        using var reader = new StreamReader(req.InputStream, req.ContentEncoding);
+        string body = await reader.ReadToEndAsync(ct).ConfigureAwait(false);
+
+        WindowLaunchSpec? incomingSpec = null;
+        try
+        {
+            incomingSpec = JsonSerializer.Deserialize<WindowLaunchSpec>(body, JsonOptions);
+        }
+        catch
+        {
+        }
+
+        WindowLaunchSpec resolvedSpec;
+        if (incomingSpec != null &&
+            !string.IsNullOrWhiteSpace(incomingSpec.TargetName) &&
+            !string.IsNullOrWhiteSpace(incomingSpec.TargetPath) &&
+            !string.IsNullOrWhiteSpace(incomingSpec.WorkingDirectory))
+        {
+            resolvedSpec = incomingSpec;
+        }
+        else
+        {
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            string? targetPath = root.TryGetProperty("targetPath", out var tp) ? tp.GetString() : null;
+            string? runnerPath = root.TryGetProperty("runnerPath", out var rp) ? rp.GetString() : null;
+            string? extraArgs = root.TryGetProperty("extraArguments", out var ea) ? ea.GetString() : null;
+
+            var buildRes = WindowLaunchProfileBuilder.Build(targetPath ?? string.Empty, runnerPath, extraArgs);
+            if (buildRes.IsFailure)
+            {
+                resp.StatusCode = (int)HttpStatusCode.BadRequest;
+                byte[] errBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { error = buildRes.Error }, JsonOptions));
+                resp.ContentType = "application/json";
+                resp.ContentLength64 = errBytes.Length;
+                await resp.OutputStream.WriteAsync(errBytes, ct).ConfigureAwait(false);
+                resp.Close();
+                return;
+            }
+
+            resolvedSpec = buildRes.Value;
+        }
+
+        await Application.Current.Dispatcher.InvokeAsync(async () =>
+        {
+            if (Application.Current.MainWindow is MainWindow mw)
+            {
+                mw.EnsureVisibleAndActive();
+            }
+
+            if (_controller.IsRunning &&
+                string.Equals(_controller.CurrentTargetPath, resolvedSpec.TargetPath, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(_controller.CurrentRunnerPath ?? string.Empty, resolvedSpec.RunnerPath ?? string.Empty, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            if (_controller.IsRunning)
+            {
+                await _viewModel.StopTargetAsync();
+            }
+
+            var sw = Stopwatch.StartNew();
+            while (sw.ElapsedMilliseconds < 5000)
+            {
+                if (_viewModel.GetContainerHwndFunc != null && _viewModel.GetContainerHwndFunc() != IntPtr.Zero)
+                {
+                    break;
+                }
+
+                await Task.Delay(100);
+            }
+
+            await _viewModel.ApplyLaunchSpecAsync(resolvedSpec);
+            await _viewModel.StartTargetAsync();
+        });
+
+        WriteCurrentSession();
+        await HandleGetStatusAsync(resp, ct).ConfigureAwait(false);
+    }
+
+    private async Task HandlePostCloseAsync(HttpListenerResponse resp, CancellationToken ct)
+    {
+        await Application.Current.Dispatcher.InvokeAsync(async () =>
+        {
+            await _viewModel.StopTargetAsync();
+        });
+
+        WriteCurrentSession();
+
+        byte[] bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { status = "Closed" }, JsonOptions));
+        resp.StatusCode = (int)HttpStatusCode.OK;
+        resp.ContentType = "application/json";
+        resp.ContentLength64 = bytes.Length;
+        await resp.OutputStream.WriteAsync(bytes, ct).ConfigureAwait(false);
+        resp.Close();
+    }
+
+    private async Task HandleGetScreenshotAsync(HttpListenerResponse resp, CancellationToken ct)
+    {
+        if (!_controller.IsRunning)
+        {
+            resp.StatusCode = (int)HttpStatusCode.Conflict;
+            byte[] err = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { error = "No target window is currently running." }, JsonOptions));
+            resp.ContentType = "application/json";
+            resp.ContentLength64 = err.Length;
+            await resp.OutputStream.WriteAsync(err, ct).ConfigureAwait(false);
+            resp.Close();
+            return;
+        }
+
+        string? baseUrl = _controller.ActiveSensorBaseUrl;
+        string? token = _controller.ActiveSensorToken;
+
+        if (_viewModel.IsSensorConnected && !string.IsNullOrEmpty(baseUrl) && !string.IsNullOrEmpty(token))
+        {
+            var sensorShot = await _sensorClient.CaptureScreenshotAsync(baseUrl, token, ct).ConfigureAwait(false);
+            if (sensorShot.IsSuccess && sensorShot.Value.PngBytes.Length > 0)
+            {
+                resp.StatusCode = (int)HttpStatusCode.OK;
+                resp.ContentType = "image/png";
+                resp.Headers["X-Candied-Vision-Tier"] = VisionTier.SensorBridge.ToString();
+                resp.ContentLength64 = sensorShot.Value.PngBytes.Length;
+                await resp.OutputStream.WriteAsync(sensorShot.Value.PngBytes, ct).ConfigureAwait(false);
+                resp.Close();
+                return;
+            }
+        }
+
+        byte[] extPng = _controller.CaptureExternalScreenshot();
+        if (extPng.Length == 0)
+        {
+            resp.StatusCode = (int)HttpStatusCode.ServiceUnavailable;
+            byte[] err = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { error = "Failed to capture external window PNG." }, JsonOptions));
+            resp.ContentType = "application/json";
+            resp.ContentLength64 = err.Length;
+            await resp.OutputStream.WriteAsync(err, ct).ConfigureAwait(false);
+            resp.Close();
+            return;
+        }
+
+        resp.StatusCode = (int)HttpStatusCode.OK;
+        resp.ContentType = "image/png";
+        resp.Headers["X-Candied-Vision-Tier"] = VisionTier.BaseWindow.ToString();
+        resp.ContentLength64 = extPng.Length;
+        await resp.OutputStream.WriteAsync(extPng, ct).ConfigureAwait(false);
+        resp.Close();
+    }
+
+    private async Task HandlePostInputAsync(HttpListenerRequest req, HttpListenerResponse resp, CancellationToken ct)
+    {
+        if (!_controller.IsRunning)
+        {
+            resp.StatusCode = (int)HttpStatusCode.Conflict;
+            byte[] err = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { error = "No target window is currently running." }, JsonOptions));
+            resp.ContentType = "application/json";
+            resp.ContentLength64 = err.Length;
+            await resp.OutputStream.WriteAsync(err, ct).ConfigureAwait(false);
+            resp.Close();
+            return;
+        }
+
+        using var reader = new StreamReader(req.InputStream, req.ContentEncoding);
+        string body = await reader.ReadToEndAsync(ct).ConfigureAwait(false);
+        var inputReq = JsonLite.DeserializeInputRequest(body);
+
+        VisionInputResponse inputResp;
+        string? baseUrl = _controller.ActiveSensorBaseUrl;
+        string? token = _controller.ActiveSensorToken;
+
+        if (_viewModel.IsSensorConnected && !string.IsNullOrEmpty(baseUrl) && !string.IsNullOrEmpty(token))
+        {
+            var sensorRes = await _sensorClient.SendInputAsync(baseUrl, token, inputReq, ct).ConfigureAwait(false);
+            if (sensorRes.IsSuccess)
+            {
+                inputResp = sensorRes.Value;
+            }
+            else
+            {
+                inputResp = _controller.DispatchBaseWindowInput(inputReq);
+            }
+        }
+        else
+        {
+            inputResp = _controller.DispatchBaseWindowInput(inputReq);
+        }
+
+        byte[] outBytes = Encoding.UTF8.GetBytes(JsonLite.Serialize(inputResp));
+        resp.StatusCode = inputResp.Success ? (int)HttpStatusCode.OK : (int)HttpStatusCode.BadRequest;
+        resp.ContentType = "application/json";
+        resp.ContentLength64 = outBytes.Length;
+        await resp.OutputStream.WriteAsync(outBytes, ct).ConfigureAwait(false);
+        resp.Close();
+    }
+
+    private void WriteCurrentSession()
+    {
+        _sessionManager.WriteSession(new StudioSessionInfo(
+            StudioPid: Environment.ProcessId,
+            StudioPort: _port,
+            StudioToken: _token,
+            ActiveTargetName: _controller.IsRunning ? _controller.CurrentTargetName : null,
+            TargetPid: _controller.ActiveTargetProcessId,
+            SensorPort: _controller.ActiveSensorPort,
+            SensorToken: _controller.ActiveSensorToken));
+    }
+
+    private static bool FixedTimeTokenEquals(string actual, string expected)
+    {
+        byte[] a = Encoding.UTF8.GetBytes(actual);
+        byte[] b = Encoding.UTF8.GetBytes(expected);
+        return CryptographicOperations.FixedTimeEquals(a, b);
+    }
+
+    private void OnTargetProcessExited(int exitCode)
+    {
+        WriteCurrentSession();
     }
 
     private static StudioWindowInfoDto GetWindowInfo()
@@ -188,8 +456,7 @@ public sealed class StudioHttpServer : IDisposable
 
         return Application.Current.Dispatcher.Invoke(() =>
         {
-            var mainWindow = Application.Current.MainWindow as MainWindow;
-            if (mainWindow == null)
+            if (Application.Current.MainWindow is not MainWindow mainWindow)
             {
                 return new StudioWindowInfoDto(0, false, "None", "Hidden", 0, 0, 0, 0, 0, 0, false, false);
             }
@@ -231,8 +498,7 @@ public sealed class StudioHttpServer : IDisposable
                 w,
                 h,
                 isWithinMonitor,
-                isResponding
-            );
+                isResponding);
         });
     }
 
@@ -251,130 +517,20 @@ public sealed class StudioHttpServer : IDisposable
         bool IsResponding
     );
 
-    private async Task HandlePostLaunchAsync(HttpListenerRequest req, HttpListenerResponse resp, CancellationToken ct)
-    {
-        using var reader = new StreamReader(req.InputStream, req.ContentEncoding);
-        var body = await reader.ReadToEndAsync(ct).ConfigureAwait(false);
-
-        using var doc = JsonDocument.Parse(body);
-        var root = doc.RootElement;
-
-        string? gameName = root.TryGetProperty("gameName", out var gn) ? gn.GetString() : null;
-        string? executablePath = root.TryGetProperty("executablePath", out var ep) ? ep.GetString() : null;
-
-        if (string.IsNullOrWhiteSpace(executablePath))
-        {
-            resp.StatusCode = (int)HttpStatusCode.BadRequest;
-            var errBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { error = "executablePath is required." }));
-            resp.ContentType = "application/json";
-            resp.ContentLength64 = errBytes.Length;
-            await resp.OutputStream.WriteAsync(errBytes, ct).ConfigureAwait(false);
-            resp.Close();
-            return;
-        }
-
-        // Execute launch on UI thread
-        await Application.Current.Dispatcher.InvokeAsync(async () =>
-        {
-            // Ensure window is visible and active on screen
-            if (Application.Current.MainWindow is MainWindow mw)
-            {
-                mw.EnsureVisibleAndActive();
-            }
-
-            // If already running with same game: return current status (idempotence)
-            if (_controller.IsRunning &&
-                string.Equals(_controller.CurrentGameName, gameName, StringComparison.OrdinalIgnoreCase))
-            {
-                return;
-            }
-
-            // Stop any currently running game
-            if (_controller.IsRunning)
-            {
-                await _viewModel.StopGameAsync();
-            }
-
-            // Wait briefly for container HWND to become available if app just launched
-            var sw = Stopwatch.StartNew();
-            while (sw.ElapsedMilliseconds < 5000)
-            {
-                if (_viewModel.GetContainerHwndFunc != null && _viewModel.GetContainerHwndFunc() != IntPtr.Zero)
-                {
-                    break;
-                }
-                await Task.Delay(100);
-            }
-
-            await _viewModel.SelectGamePathAsync(executablePath);
-            await _viewModel.StartGameAsync();
-        });
-
-        // Update session state
-        _sessionManager.WriteSession(new StudioSessionInfo(
-            StudioPid: Environment.ProcessId,
-            StudioPort: _port,
-            StudioToken: _token,
-            ActiveGameName: _controller.CurrentGameName,
-            GamePid: _controller.ActiveGameProcessId,
-            BridgePort: _controller.ActiveVisionBridgePort,
-            BridgeToken: _controller.ActiveVisionBridgeToken
-        ));
-
-        await HandleGetStatusAsync(resp, ct).ConfigureAwait(false);
-    }
-
-    private async Task HandlePostCloseAsync(HttpListenerResponse resp, CancellationToken ct)
-    {
-        await Application.Current.Dispatcher.InvokeAsync(async () =>
-        {
-            await _viewModel.StopGameAsync();
-        });
-
-        _sessionManager.WriteSession(new StudioSessionInfo(
-            StudioPid: Environment.ProcessId,
-            StudioPort: _port,
-            StudioToken: _token,
-            ActiveGameName: null,
-            GamePid: null,
-            BridgePort: null,
-            BridgeToken: null
-        ));
-
-        var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { status = "Closed" }));
-        resp.StatusCode = (int)HttpStatusCode.OK;
-        resp.ContentType = "application/json";
-        resp.ContentLength64 = bytes.Length;
-        await resp.OutputStream.WriteAsync(bytes, ct).ConfigureAwait(false);
-        resp.Close();
-    }
-
-    private void OnGameProcessExited(int exitCode)
-    {
-        _sessionManager.WriteSession(new StudioSessionInfo(
-            StudioPid: Environment.ProcessId,
-            StudioPort: _port,
-            StudioToken: _token,
-            ActiveGameName: null,
-            GamePid: null,
-            BridgePort: null,
-            BridgeToken: null
-        ));
-    }
-
     public void Dispose()
     {
         if (!_isDisposed)
         {
-            _controller.ProcessExited -= OnGameProcessExited;
-
+            _controller.ProcessExited -= OnTargetProcessExited;
             _cts?.Cancel();
             try
             {
                 _listener?.Stop();
                 _listener?.Close();
             }
-            catch { }
+            catch
+            {
+            }
 
             _sessionManager.DeleteSession();
             _isDisposed = true;

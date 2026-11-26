@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Candied.Platforms.Unity.Mono</RootNamespace>
+    <AssemblyName>Candied.Platforms.Unity.Mono</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Candied.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Candied.Primitives\Candied.Primitives.csproj" />
+    <ProjectReference Include="..\..\Candied.Core\Candied.Core.csproj" />
+    <ProjectReference Include="..\..\Candied.Vision\Candied.Vision.csproj" />
+    <ProjectReference Include="..\Candied.Platforms.Unity.Shared\Candied.Platforms.Unity.Shared.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ICSharpCode.Decompiler" Version="11.2.0.10050" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="9.0.2" />
+  </ItemGroup>
+</Project>

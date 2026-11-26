@@ -4,6 +4,7 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading;
@@ -12,39 +13,44 @@ using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
-using Candied.Core.Models;
-using Candied.Core.Ports;
 using Candied.Studio.Services;
-using Candied.VisionBridge.Protocol;
+using Candied.Vision.Analysis;
+using Candied.Vision.Controls;
+using Candied.Vision.Hosting;
+using Candied.Vision.Models;
+using Candied.Vision.Ports;
+using Candied.Vision.Protocol;
 using Microsoft.Win32;
 
 namespace Candied.Studio.ViewModels;
 
 public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 {
-    private readonly IUnityGameHostController _controller;
-    private readonly IVisionBridgeClient _visionClient;
-    private readonly IRegisteredGameRegistry? _gameRegistry;
+    private readonly ITargetHostController _controller;
+    private readonly IVisionSensorClient _sensorClient;
+    private readonly IGameControlProfileStore? _controlStore;
+    private readonly IRecentTargetsStore? _recentTargetsStore;
 
-    private string _selectedGamePath = string.Empty;
-    private string _gameName = "Nessun gioco selezionato";
-    private string _statusText = "Seleziona un gioco registrato o sfoglia un eseguibile Unity Mono.";
+    private string _selectedTargetPath = string.Empty;
+    private string _selectedRunnerPath = string.Empty;
+    private string _targetName = "Nessun target selezionato";
+    private string _statusText = "Seleziona un target recente, sfoglia un eseguibile/ROM o avvia via Candied.Agent.";
     private string _embeddingMode = "Nessuno";
     private bool _isRunning;
     private bool _isBusy;
     private bool _isSidebarVisible = true;
 
-    // Registered Games & Viewport Presets
-    private RegisteredGameInfo? _selectedRegisteredGame;
+    private RecentTargetEntry? _selectedRecentTarget;
     private ViewportPresetOption _selectedViewportPreset = ViewportPresetOption.DefaultPresets[0];
     private string _viewportResolutionBadge = "1280×720 • 16:9 (1080p Aspect)";
     private string _activeSceneBadge = "Scena: -";
 
-    // Vision Bridge & Input Isolation State
-    private string _visionStatusText = "Inattivo (Avvia il gioco)";
-    private string _visionCapabilitiesText = "In attesa di connessione...";
-    private bool _isVisionConnected;
+    private string _visionStatusText = "Inattivo (Avvia un gioco o emulatore)";
+    private string _visionCapabilitiesText = "Tier 1 BaseWindow (Win32) + Tier 2 SensorBridge automatico.";
+    private bool _isSensorConnected;
     private bool _isVirtualMouseIsolated;
+    private List<string> _activeCapabilities = new();
+
     private bool _hasScreenshot;
     private ImageSource? _screenshotImage;
     private bool _isUniformImage;
@@ -57,46 +63,51 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
     private int _lastScreenshotPixelHeight = 720;
     private IReadOnlyList<VisionUiElementDto> _lastUiElements = Array.Empty<VisionUiElementDto>();
 
-    // Scene Inspector State
     private string _sceneFilterText = string.Empty;
-    private string _sceneSummaryText = "Premi 'Ispeziona Scena' per elencare Telecamere e Renderer attivi.";
+    private string _sceneSummaryText = "Premi 'Ispeziona Scena' quando un sensore Tier 2 è connesso.";
 
-    // Log Filtering State
+    private GameControlProfile? _activeControlProfile;
+    private string _controlsSummaryText = "Azioni semantiche standard pronte (Confirm, Cancel, Pause, D-Pad).";
+    private string _customKeyInput = "Enter";
+
     private readonly List<StudioLogEntry> _allStructuredLogs = new();
     private string _logSearchText = string.Empty;
     private bool _onlyWarningsAndErrors;
 
     private CancellationTokenSource? _visionMonitorCts;
-    private CancellationTokenSource? _resizeDebounceCts;
-
-    private int _gameInternalWidth = UnityGameHostController.DefaultGameWidth;
-    private int _gameInternalHeight = UnityGameHostController.DefaultGameHeight;
+    private int _targetInternalWidth = TargetHostController.DefaultTargetWidth;
+    private int _targetInternalHeight = TargetHostController.DefaultTargetHeight;
 
     public Func<IntPtr>? GetContainerHwndFunc { get; set; }
     public Func<(int width, int height)>? GetContainerPixelSizeFunc { get; set; }
     public event Action? ViewportPresetChanged;
 
-    public ObservableCollection<RegisteredGameInfo> RegisteredGames { get; } = new();
+    public ObservableCollection<RecentTargetEntry> RecentTargets { get; } = new();
     public IReadOnlyList<ViewportPresetOption> ViewportPresets { get; } = ViewportPresetOption.DefaultPresets;
 
     public ObservableCollection<UiElementItemViewModel> UiElementItems { get; } = new();
     public ObservableCollection<SceneCameraItemViewModel> SceneCameras { get; } = new();
-    public ObservableCollection<SceneRendererItemViewModel> SceneRenderers { get; } = new();
+    public ObservableCollection<SceneNodeItemViewModel> SceneNodes { get; } = new();
+    public ObservableCollection<ControlActionItemViewModel> ControlActions { get; } = new();
 
     public ObservableCollection<string> LogEntries { get; } = new();
     public ObservableCollection<StudioLogEntry> FilteredLogEntries { get; } = new();
 
-    public RegisteredGameInfo? SelectedRegisteredGame
+    public RecentTargetEntry? SelectedRecentTarget
     {
-        get => _selectedRegisteredGame;
+        get => _selectedRecentTarget;
         set
         {
-            if (ReferenceEquals(_selectedRegisteredGame, value)) return;
-            _selectedRegisteredGame = value;
-            OnPropertyChanged();
-            if (value != null && !string.Equals(SelectedGamePath, value.ExecutablePath, StringComparison.OrdinalIgnoreCase))
+            if (ReferenceEquals(_selectedRecentTarget, value))
             {
-                _ = SelectGamePathAsync(value.ExecutablePath);
+                return;
+            }
+
+            _selectedRecentTarget = value;
+            OnPropertyChanged();
+            if (value != null && !string.Equals(SelectedTargetPath, value.TargetPath, StringComparison.OrdinalIgnoreCase))
+            {
+                _ = SelectTargetAsync(value.TargetPath, value.RunnerPath, value.ExtraArguments);
             }
         }
     }
@@ -106,7 +117,11 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         get => _selectedViewportPreset;
         set
         {
-            if (value == null || ReferenceEquals(_selectedViewportPreset, value)) return;
+            if (value == null || ReferenceEquals(_selectedViewportPreset, value))
+            {
+                return;
+            }
+
             _selectedViewportPreset = value;
             OnPropertyChanged();
             ViewportPresetChanged?.Invoke();
@@ -118,7 +133,11 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         get => _isSidebarVisible;
         set
         {
-            if (_isSidebarVisible == value) return;
+            if (_isSidebarVisible == value)
+            {
+                return;
+            }
+
             _isSidebarVisible = value;
             OnPropertyChanged();
             OnPropertyChanged(nameof(SidebarToggleButtonText));
@@ -140,16 +159,30 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         set { _activeSceneBadge = value; OnPropertyChanged(); }
     }
 
-    public string SelectedGamePath
+    public string SelectedTargetPath
     {
-        get => _selectedGamePath;
-        set { _selectedGamePath = value; OnPropertyChanged(); UpdateCommandStates(); }
+        get => _selectedTargetPath;
+        set { _selectedTargetPath = value; OnPropertyChanged(); UpdateCommandStates(); }
     }
 
-    public string GameName
+    public string SelectedRunnerPath
     {
-        get => _gameName;
-        set { _gameName = value; OnPropertyChanged(); }
+        get => _selectedRunnerPath;
+        set
+        {
+            _selectedRunnerPath = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(HasRunnerPath));
+            UpdateCommandStates();
+        }
+    }
+
+    public bool HasRunnerPath => !string.IsNullOrWhiteSpace(_selectedRunnerPath);
+
+    public string TargetName
+    {
+        get => _targetName;
+        set { _targetName = value; OnPropertyChanged(); }
     }
 
     public string StatusText
@@ -167,7 +200,13 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
     public bool IsRunning
     {
         get => _isRunning;
-        set { _isRunning = value; OnPropertyChanged(); UpdateCommandStates(); }
+        set
+        {
+            _isRunning = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(VisionTierBadgeText));
+            UpdateCommandStates();
+        }
     }
 
     public bool IsBusy
@@ -188,11 +227,21 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         set { _visionCapabilitiesText = value; OnPropertyChanged(); }
     }
 
-    public bool IsVisionConnected
+    public bool IsSensorConnected
     {
-        get => _isVisionConnected;
-        set { _isVisionConnected = value; OnPropertyChanged(); UpdateCommandStates(); }
+        get => _isSensorConnected;
+        set
+        {
+            _isSensorConnected = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(VisionTierBadgeText));
+            UpdateCommandStates();
+        }
     }
+
+    public string VisionTierBadgeText => !IsRunning
+        ? "Tier: Inattivo"
+        : (IsSensorConnected ? "🟢 Tier 2: SensorBridge" : "🔵 Tier 1: BaseWindow (Win32)");
 
     public bool IsVirtualMouseIsolated
     {
@@ -203,19 +252,16 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             OnPropertyChanged();
             OnPropertyChanged(nameof(InputIsolationBadgeText));
             OnPropertyChanged(nameof(InputIsolationButtonText));
-            OnPropertyChanged(nameof(InputIsolationBadgeColor));
         }
     }
 
     public string InputIsolationBadgeText => IsVirtualMouseIsolated
-        ? "🤖 Input: Virtual Mouse AI (Isolato)"
-        : "🖱️ Input: Mouse Fisico (Manuale)";
+        ? "🤖 Input: Virtual Pointer (Isolato)"
+        : "🖱️ Input: Fisico / Win32";
 
     public string InputIsolationButtonText => IsVirtualMouseIsolated
         ? "🖱️ Usa Mouse Fisico"
-        : "🤖 Isola Mouse AI";
-
-    public string InputIsolationBadgeColor => IsVirtualMouseIsolated ? "#38BDF8" : "#4ADE80";
+        : "🤖 Isola Puntatore AI";
 
     public bool HasScreenshot
     {
@@ -276,6 +322,18 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         set { _sceneSummaryText = value; OnPropertyChanged(); }
     }
 
+    public string ControlsSummaryText
+    {
+        get => _controlsSummaryText;
+        set { _controlsSummaryText = value; OnPropertyChanged(); }
+    }
+
+    public string CustomKeyInput
+    {
+        get => _customKeyInput;
+        set { _customKeyInput = value; OnPropertyChanged(); }
+    }
+
     public string LogSearchText
     {
         get => _logSearchText;
@@ -301,16 +359,19 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
     public int LastScreenshotPixelWidth => _lastScreenshotPixelWidth;
     public int LastScreenshotPixelHeight => _lastScreenshotPixelHeight;
 
-    public bool CanStart => !IsRunning && !IsBusy && !string.IsNullOrWhiteSpace(SelectedGamePath);
+    public bool CanStart => !IsRunning && !IsBusy && !string.IsNullOrWhiteSpace(SelectedTargetPath);
     public bool CanStop => IsRunning && !IsBusy;
     public bool CanRestart => IsRunning && !IsBusy;
-    public bool CanCaptureScreenshot => IsRunning && !IsBusy && _controller.ActiveVisionBridgePort.HasValue;
-    public bool CanInspectUi => IsRunning && !IsBusy && _controller.ActiveVisionBridgePort.HasValue;
-    public bool CanInspectScene => IsRunning && !IsBusy && _controller.ActiveVisionBridgePort.HasValue;
-    public bool CanToggleInputIsolation => IsRunning && !IsBusy && _controller.ActiveVisionBridgePort.HasValue;
+    public bool CanCaptureScreenshot => IsRunning && !IsBusy;
+    public bool CanDispatchInput => IsRunning && !IsBusy;
+    public bool CanInspectUi => IsRunning && !IsBusy && IsSensorConnected;
+    public bool CanInspectScene => IsRunning && !IsBusy && IsSensorConnected;
+    public bool CanToggleInputIsolation => IsRunning && !IsBusy && IsSensorConnected;
 
-    public ICommand BrowseGameCommand { get; }
-    public ICommand RefreshRegisteredGamesCommand { get; }
+    public ICommand BrowseTargetCommand { get; }
+    public ICommand BrowseRunnerCommand { get; }
+    public ICommand ClearRunnerCommand { get; }
+    public ICommand RefreshRecentTargetsCommand { get; }
     public ICommand StartCommand { get; }
     public ICommand StopCommand { get; }
     public ICommand RestartCommand { get; }
@@ -322,25 +383,39 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
     public ICommand InspectUiElementsCommand { get; }
     public ICommand ClickUiElementCommand { get; }
     public ICommand InspectSceneCommand { get; }
+    public ICommand ReloadControlsCommand { get; }
+    public ICommand TriggerActionCommand { get; }
+    public ICommand SendCustomKeyCommand { get; }
 
     public MainWindowViewModel(
-        IUnityGameHostController controller,
-        IVisionBridgeClient visionClient,
-        IRegisteredGameRegistry? gameRegistry = null)
+        ITargetHostController controller,
+        IVisionSensorClient sensorClient,
+        IGameControlProfileStore? controlStore = null,
+        IRecentTargetsStore? recentTargetsStore = null)
     {
         _controller = controller ?? throw new ArgumentNullException(nameof(controller));
-        _visionClient = visionClient ?? throw new ArgumentNullException(nameof(visionClient));
-        _gameRegistry = gameRegistry;
+        _sensorClient = sensorClient ?? throw new ArgumentNullException(nameof(sensorClient));
+        _controlStore = controlStore;
+        _recentTargetsStore = recentTargetsStore;
 
         _controller.StatusChanged += OnControllerStatusChanged;
         _controller.LogReceived += OnControllerLogReceived;
         _controller.ProcessExited += OnControllerProcessExited;
 
-        BrowseGameCommand = new RelayCommand(_ => BrowseGame());
-        RefreshRegisteredGamesCommand = new RelayCommand(async _ => await LoadRegisteredGamesAsync());
-        StartCommand = new RelayCommand(async _ => await StartGameAsync(), _ => CanStart);
-        StopCommand = new RelayCommand(async _ => await StopGameAsync(), _ => CanStop);
-        RestartCommand = new RelayCommand(async _ => await RestartGameAsync(), _ => CanRestart);
+        BrowseTargetCommand = new RelayCommand(_ => BrowseTarget());
+        BrowseRunnerCommand = new RelayCommand(_ => BrowseRunner());
+        ClearRunnerCommand = new RelayCommand(_ =>
+        {
+            SelectedRunnerPath = string.Empty;
+            if (!string.IsNullOrWhiteSpace(SelectedTargetPath))
+            {
+                _ = SelectTargetAsync(SelectedTargetPath, null);
+            }
+        });
+        RefreshRecentTargetsCommand = new RelayCommand(async _ => await LoadRecentTargetsAsync());
+        StartCommand = new RelayCommand(async _ => await StartTargetAsync(), _ => CanStart);
+        StopCommand = new RelayCommand(async _ => await StopTargetAsync(), _ => CanStop);
+        RestartCommand = new RelayCommand(async _ => await RestartTargetAsync(), _ => CanRestart);
         ToggleSidebarCommand = new RelayCommand(_ => IsSidebarVisible = !IsSidebarVisible);
         ToggleInputIsolationCommand = new RelayCommand(async _ => await SetInputIsolationAsync(!IsVirtualMouseIsolated), _ => CanToggleInputIsolation);
         ClearLogsCommand = new RelayCommand(_ => ClearLogs());
@@ -351,93 +426,144 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         {
             if (param is UiElementItemViewModel item)
             {
-                await ClickGamePointAsync(item.CenterX, item.CenterY, item.DisplayLabel);
+                await ClickTargetPointAsync(item.CenterX, item.CenterY, item.DisplayLabel);
             }
         }, _ => CanInspectUi);
         InspectSceneCommand = new RelayCommand(async _ => await InspectSceneAsync(), _ => CanInspectScene);
-
-        if (_gameRegistry != null)
+        ReloadControlsCommand = new RelayCommand(async _ => await LoadControlProfileAsync());
+        TriggerActionCommand = new RelayCommand(async param =>
         {
-            _ = LoadRegisteredGamesAsync();
+            if (param is string actionName && !string.IsNullOrWhiteSpace(actionName))
+            {
+                await TriggerSemanticActionAsync(actionName);
+            }
+        }, _ => CanDispatchInput);
+        SendCustomKeyCommand = new RelayCommand(async _ => await SendCustomKeyAsync(), _ => CanDispatchInput);
+
+        PopulateDefaultControlActions();
+
+        if (_recentTargetsStore != null)
+        {
+            _ = LoadRecentTargetsAsync();
         }
     }
 
-    public async Task LoadRegisteredGamesAsync()
+    public async Task LoadRecentTargetsAsync()
     {
-        if (_gameRegistry == null) return;
+        if (_recentTargetsStore == null)
+        {
+            return;
+        }
 
         try
         {
-            var games = await _gameRegistry.ListRegisteredGamesAsync();
-            void ApplyGames()
+            var items = await _recentTargetsStore.ListRecentAsync().ConfigureAwait(false);
+            void ApplyRecent()
             {
-                RegisteredGames.Clear();
-                foreach (var g in games)
+                RecentTargets.Clear();
+                foreach (var item in items)
                 {
-                    RegisteredGames.Add(g);
-                }
-
-                if (SelectedRegisteredGame == null && RegisteredGames.Count > 0 && string.IsNullOrWhiteSpace(SelectedGamePath))
-                {
-                    SelectedRegisteredGame = RegisteredGames[0];
+                    RecentTargets.Add(item);
                 }
             }
 
             if (Application.Current?.Dispatcher != null)
             {
-                Application.Current.Dispatcher.Invoke(ApplyGames);
+                Application.Current.Dispatcher.Invoke(ApplyRecent);
             }
             else
             {
-                ApplyGames();
+                ApplyRecent();
             }
         }
         catch (Exception ex)
         {
-            AddLog($"[Host] Impossibile caricare i giochi registrati: {ex.Message}");
+            AddLog($"[Host] Impossibile caricare i target recenti: {ex.Message}");
         }
     }
 
-    public void BrowseGame()
+    public void BrowseTarget()
     {
         var dialog = new OpenFileDialog
         {
-            Filter = "Eseguibili Windows (*.exe)|*.exe|Tutti i file (*.*)|*.*",
-            Title = "Seleziona l'eseguibile del gioco Unity Mono"
+            Filter = "Giochi & ROM (*.exe;*.iso;*.chd;*.bin;*.cue;*.gba;*.nds;*.sfc;*.nes)|*.exe;*.iso;*.chd;*.bin;*.cue;*.gba;*.nds;*.sfc;*.nes|Tutti i file (*.*)|*.*",
+            Title = "Seleziona l'eseguibile del gioco o la ROM/ISO"
         };
 
         if (dialog.ShowDialog() == true)
         {
-            _ = SelectGamePathAsync(dialog.FileName);
+            string? runner = string.IsNullOrWhiteSpace(SelectedRunnerPath) ? null : SelectedRunnerPath;
+            _ = SelectTargetAsync(dialog.FileName, runner);
         }
     }
 
-    public async Task SelectGamePathAsync(string path)
+    public void BrowseRunner()
     {
-        SelectedGamePath = path;
-        IsBusy = true;
-        StatusText = "Rilevamento e validazione del gioco...";
-
-        var result = await _controller.ValidateAndSelectGameAsync(path);
-        if (result.IsSuccess)
+        var dialog = new OpenFileDialog
         {
-            GameName = result.Value.GameName;
-            StatusText = $"Pronto: {result.Value.GameName} ({result.Value.Architecture}, Mono)";
-            AddLog($"[Host] Gioco convalidato: {result.Value.GameName} ({result.Value.ManagedPath})");
+            Filter = "Eseguibile Emulatore / Runner (*.exe)|*.exe|Tutti i file (*.*)|*.*",
+            Title = "Seleziona l'emulatore o runner opzionale (es. pcsx2-qt.exe, dolphin.exe)"
+        };
+
+        if (dialog.ShowDialog() == true)
+        {
+            SelectedRunnerPath = dialog.FileName;
+            if (!string.IsNullOrWhiteSpace(SelectedTargetPath))
+            {
+                _ = SelectTargetAsync(SelectedTargetPath, SelectedRunnerPath);
+            }
+        }
+    }
+
+    public async Task SelectTargetAsync(string targetPath, string? runnerPath = null, string? extraArguments = null)
+    {
+        SelectedTargetPath = targetPath;
+        SelectedRunnerPath = runnerPath ?? string.Empty;
+
+        var res = _controller.SelectTarget(targetPath, runnerPath, extraArguments);
+        if (res.IsSuccess)
+        {
+            TargetName = res.Value.TargetName;
+            StatusText = $"Pronto: {res.Value.TargetName}";
+            AddLog($"[Host] Target preparato: {res.Value.TargetName} ({res.Value.TargetPath})");
+            await LoadControlProfileAsync();
         }
         else
         {
-            GameName = "Non valido";
-            StatusText = result.Error;
-            AddLog($"[Host] Errore di validazione: {result.Error}");
+            TargetName = "Non valido";
+            StatusText = res.Error;
+            AddLog($"[Host] Errore selezione target: {res.Error}");
         }
-
-        IsBusy = false;
     }
 
-    public async Task StartGameAsync()
+    public async Task ApplyLaunchSpecAsync(WindowLaunchSpec spec)
     {
-        if (GetContainerHwndFunc == null || GetContainerPixelSizeFunc == null) return;
+        ArgumentNullException.ThrowIfNull(spec);
+        SelectedTargetPath = spec.TargetPath;
+        SelectedRunnerPath = spec.RunnerPath ?? string.Empty;
+        TargetName = spec.TargetName;
+        _controller.SelectLaunchSpec(spec);
+        await LoadControlProfileAsync();
+    }
+
+    public async Task StartTargetAsync()
+    {
+        if (GetContainerHwndFunc == null || GetContainerPixelSizeFunc == null)
+        {
+            return;
+        }
+
+        if (_controller.ActiveSpec == null && !string.IsNullOrWhiteSpace(SelectedTargetPath))
+        {
+            var sel = _controller.SelectTarget(SelectedTargetPath, string.IsNullOrWhiteSpace(SelectedRunnerPath) ? null : SelectedRunnerPath);
+            if (sel.IsFailure)
+            {
+                StatusText = sel.Error;
+                return;
+            }
+
+            TargetName = sel.Value.TargetName;
+        }
 
         IsBusy = true;
         ViewportPresetChanged?.Invoke();
@@ -452,32 +578,49 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
         if (success)
         {
+            VisionStatusText = "Tier 1 BaseWindow attivo (Cattura Win32 pronta • Ricerca SensorBridge...)";
             ViewportPresetChanged?.Invoke();
-            StartVisionBridgeMonitoring();
+            StartSensorMonitoring();
+
+            if (_recentTargetsStore != null && _controller.ActiveSpec != null)
+            {
+                var spec = _controller.ActiveSpec;
+                await _recentTargetsStore.RecordRecentAsync(new RecentTargetEntry(
+                    spec.TargetName,
+                    spec.TargetPath,
+                    spec.RunnerPath,
+                    spec.ExtraArguments,
+                    DateTimeOffset.UtcNow));
+                await LoadRecentTargetsAsync();
+            }
         }
     }
 
-    public async Task StopGameAsync()
+    public async Task StopTargetAsync()
     {
         IsBusy = true;
-        StopVisionBridgeMonitoring();
+        StopSensorMonitoring();
         await _controller.StopAsync();
         IsRunning = false;
         EmbeddingMode = "Nessuno";
-        VisionStatusText = "Inattivo (Gioco fermato)";
+        VisionStatusText = "Inattivo (Target fermato)";
         VisionCapabilitiesText = "-";
         ActiveSceneBadge = "Scena: -";
-        IsVisionConnected = false;
+        IsSensorConnected = false;
         IsVirtualMouseIsolated = false;
+        _activeCapabilities.Clear();
         IsBusy = false;
     }
 
-    public async Task RestartGameAsync()
+    public async Task RestartTargetAsync()
     {
-        if (GetContainerHwndFunc == null || GetContainerPixelSizeFunc == null) return;
+        if (GetContainerHwndFunc == null || GetContainerPixelSizeFunc == null)
+        {
+            return;
+        }
 
         IsBusy = true;
-        StopVisionBridgeMonitoring();
+        StopSensorMonitoring();
         IntPtr hwnd = GetContainerHwndFunc();
         var (pxW, pxH) = GetContainerPixelSizeFunc();
 
@@ -490,19 +633,24 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         if (success)
         {
             ViewportPresetChanged?.Invoke();
-            StartVisionBridgeMonitoring();
+            StartSensorMonitoring();
         }
     }
 
     public void OnHostResized(int pixelWidth, int pixelHeight)
     {
-        if (pixelWidth <= 0 || pixelHeight <= 0) return;
+        if (pixelWidth <= 0 || pixelHeight <= 0)
+        {
+            return;
+        }
 
         UpdateViewportBadge(pixelWidth, pixelHeight);
 
-        if (!IsRunning) return;
+        if (!IsRunning)
+        {
+            return;
+        }
 
-        // Maintain strict 16:9 (1920x1080 aspect ratio) inside the host container
         _controller.Resize(
             pixelWidth,
             pixelHeight,
@@ -512,32 +660,160 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
     private void UpdateViewportBadge(int pxW, int pxH)
     {
-        int w = pxW > 0 ? pxW : _gameInternalWidth;
-        int h = pxH > 0 ? pxH : _gameInternalHeight;
+        int w = pxW > 0 ? pxW : _targetInternalWidth;
+        int h = pxH > 0 ? pxH : _targetInternalHeight;
         ViewportResolutionBadge = $"{w}×{h}px • 16:9 (Ref 1920×1080)";
+    }
+
+    public async Task LoadControlProfileAsync()
+    {
+        if (_controlStore == null || string.IsNullOrWhiteSpace(TargetName) || TargetName == "Nessun target selezionato")
+        {
+            PopulateDefaultControlActions();
+            return;
+        }
+
+        string profilePath = VisionConfigPaths.ResolveControlProfilePath(TargetName);
+        var loaded = await _controlStore.LoadProfileAsync(profilePath);
+        _activeControlProfile = loaded;
+
+        if (loaded != null && loaded.Actions.Count > 0)
+        {
+            ControlActions.Clear();
+            foreach (var entry in loaded.Actions)
+            {
+                ControlActions.Add(ControlActionItemViewModel.FromEntry(entry));
+            }
+
+            ControlsSummaryText = $"Profilo caricato ({loaded.Actions.Count} azioni) da {Path.GetFileName(profilePath)}.";
+        }
+        else
+        {
+            PopulateDefaultControlActions();
+            ControlsSummaryText = "Nessun controls.json personalizzato trovato: attivi i fallback standard.";
+        }
+    }
+
+    private void PopulateDefaultControlActions()
+    {
+        ControlActions.Clear();
+        ControlActions.Add(new ControlActionItemViewModel("Confirm", "Confirm / Accetta", "builtin", "Key: Enter | Pad: South"));
+        ControlActions.Add(new ControlActionItemViewModel("Cancel", "Cancel / Indietro", "builtin", "Key: Escape | Pad: East"));
+        ControlActions.Add(new ControlActionItemViewModel("Pause", "Pause / Menu", "builtin", "Key: Escape | Pad: Start"));
+    }
+
+    public async Task TriggerSemanticActionAsync(string actionName)
+    {
+        if (!IsRunning)
+        {
+            return;
+        }
+
+        var resolved = ControlActionResolver.ResolveAction(
+            actionName,
+            _activeControlProfile,
+            _activeCapabilities,
+            _lastScreenshotPixelWidth,
+            _lastScreenshotPixelHeight);
+
+        if (resolved.IsFailure)
+        {
+            StatusText = resolved.Error.Message;
+            AddLog($"[Controls] {resolved.Error.Code}: {resolved.Error.Message}");
+            return;
+        }
+
+        await DispatchVisionInputAsync(resolved.Value, $"Azione '{actionName}'");
+    }
+
+    public async Task SendCustomKeyAsync()
+    {
+        if (!IsRunning || string.IsNullOrWhiteSpace(CustomKeyInput))
+        {
+            return;
+        }
+
+        var req = new VisionInputRequest
+        {
+            Channel = VisionConstants.ChannelKeyboard,
+            Action = "press",
+            Key = CustomKeyInput.Trim(),
+            HoldFrames = 6
+        };
+
+        await DispatchVisionInputAsync(req, $"Tasto '{CustomKeyInput.Trim()}'");
+    }
+
+    public async Task DispatchVisionInputAsync(VisionInputRequest request, string label)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        IsBusy = true;
+        string? baseUrl = _controller.ActiveSensorBaseUrl;
+        string? token = _controller.ActiveSensorToken;
+
+        if (IsSensorConnected && !string.IsNullOrEmpty(baseUrl) && !string.IsNullOrEmpty(token))
+        {
+            var res = await _sensorClient.SendInputAsync(baseUrl, token, request);
+            if (res.IsSuccess)
+            {
+                if (request.Channel == VisionConstants.ChannelPointer && request.Action == "click")
+                {
+                    IsVirtualMouseIsolated = true;
+                }
+
+                StatusText = $"{label} inviato via SensorBridge: {res.Value.Message}";
+                AddLog($"[SensorBridge] {res.Value.Message}");
+                await Task.Delay(200);
+                IsBusy = false;
+                await CaptureScreenshotAsync();
+                return;
+            }
+        }
+
+        var fallbackResp = await Task.Run(() => _controller.DispatchBaseWindowInput(request));
+        StatusText = fallbackResp.Success
+            ? $"{label} inviato via Tier 1 BaseWindow."
+            : $"Errore invio {label}: {fallbackResp.Message}";
+        AddLog($"[Host] {fallbackResp.Message}");
+        await Task.Delay(180);
+        IsBusy = false;
+        if (fallbackResp.Success)
+        {
+            await CaptureScreenshotAsync();
+        }
     }
 
     public async Task SetInputIsolationAsync(bool isolate)
     {
-        string? baseUrl = _controller.ActiveVisionBridgeBaseUrl;
-        string? token = _controller.ActiveVisionBridgeToken;
-        if (string.IsNullOrEmpty(baseUrl) || string.IsNullOrEmpty(token)) return;
+        string? baseUrl = _controller.ActiveSensorBaseUrl;
+        string? token = _controller.ActiveSensorToken;
+        if (string.IsNullOrEmpty(baseUrl) || string.IsNullOrEmpty(token))
+        {
+            return;
+        }
 
         IsBusy = true;
-        string action = isolate ? "isolate" : "release_isolation";
-        var res = await _visionClient.SendInputClickAsync(baseUrl, token, 0, 0, button: 0, method: null, action: action, holdFrames: 1);
+        var req = new VisionInputRequest
+        {
+            Channel = VisionConstants.ChannelPointer,
+            Action = isolate ? "isolate" : "release_isolation",
+            HoldFrames = 1
+        };
+
+        var res = await _sensorClient.SendInputAsync(baseUrl, token, req);
         if (res.IsSuccess)
         {
             IsVirtualMouseIsolated = isolate;
             StatusText = isolate
-                ? "Mouse Virtuale AI isolato (il tuo mouse fisico non interferisce col gioco)."
-                : "Mouse Fisico riattivato (puoi cliccare manualmente dentro il gioco).";
-            AddLog($"[VisionBridge] {res.Value.Message}");
+                ? "Puntatore Virtuale AI isolato (il mouse fisico non interferisce col gioco)."
+                : "Mouse Fisico riattivato.";
+            AddLog($"[SensorBridge] {res.Value.Message}");
         }
         else
         {
-            StatusText = $"Impossibile cambiare modalità input: {res.Error.Message}";
-            AddLog($"[VisionBridge] Errore cambio modalità input: {res.Error.Message}");
+            StatusText = $"Impossibile cambiare modalità puntatore: {res.Error.Message}";
+            AddLog($"[SensorBridge] Errore isolamento input: {res.Error.Message}");
         }
 
         IsBusy = false;
@@ -561,7 +837,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
         if (!inBounds)
         {
-            HoverCoordinatesText = "Cursore fuori dall'area 16:9 del frame.";
+            HoverCoordinatesText = "Cursore fuori dall'area del frame.";
             return;
         }
 
@@ -570,7 +846,10 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
     public async Task ClickOnScreenshotPreviewAsync(double controlX, double controlY, double controlWidth, double controlHeight)
     {
-        if (!HasScreenshot) return;
+        if (!HasScreenshot)
+        {
+            return;
+        }
 
         var (frameX, frameY, refX, refY, inBounds) = ViewportCalculator.ImageControlToFrameCoordinates(
             controlX,
@@ -580,13 +859,18 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             _lastScreenshotPixelWidth,
             _lastScreenshotPixelHeight);
 
-        if (!inBounds) return;
+        if (!inBounds)
+        {
+            return;
+        }
 
         try
         {
             Clipboard.SetText($"{frameX}, {frameY}");
         }
-        catch { }
+        catch
+        {
+        }
 
         if (!SendClickOnImageTap)
         {
@@ -594,123 +878,127 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             return;
         }
 
-        await ClickGamePointAsync(frameX, frameY, $"Screenshot ({frameX}, {frameY}) [1080p: {refX}, {refY}]");
+        await ClickTargetPointAsync(frameX, frameY, $"Frame ({frameX}, {frameY})");
     }
 
-    public async Task ClickGamePointAsync(float frameX, float frameY, string targetDescription)
+    public async Task ClickTargetPointAsync(float frameX, float frameY, string targetDescription)
     {
-        string? baseUrl = _controller.ActiveVisionBridgeBaseUrl;
-        string? token = _controller.ActiveVisionBridgeToken;
-        if (string.IsNullOrEmpty(baseUrl) || string.IsNullOrEmpty(token)) return;
-
-        IsBusy = true;
-        StatusText = $"Invio click virtuale su {targetDescription}...";
-        AddLog($"[VisionBridge] POST /input/click su ({frameX:F0}, {frameY:F0}) -> {targetDescription}");
-
-        var clickRes = await _visionClient.SendInputClickAsync(baseUrl, token, frameX, frameY, button: 0, method: null, action: "click", holdFrames: 5);
-        if (clickRes.IsSuccess)
+        var req = new VisionInputRequest
         {
-            IsVirtualMouseIsolated = true;
-            StatusText = $"Click eseguito su {targetDescription}. Aggiornamento frame...";
-            AddLog($"[VisionBridge] {clickRes.Value.Message}");
-            await Task.Delay(250);
-            IsBusy = false;
-            await CaptureScreenshotAsync();
-        }
-        else
-        {
-            StatusText = $"Errore click su {targetDescription}: {clickRes.Error.Message}";
-            AddLog($"[VisionBridge] Click fallito: {clickRes.Error.Message}");
-            IsBusy = false;
-        }
+            Channel = VisionConstants.ChannelPointer,
+            Action = "click",
+            X = frameX,
+            Y = frameY,
+            Button = 0,
+            HoldFrames = 6
+        };
+
+        await DispatchVisionInputAsync(req, $"Click su {targetDescription}");
     }
 
     public async Task CaptureScreenshotAsync()
     {
-        string? baseUrl = _controller.ActiveVisionBridgeBaseUrl;
-        string? token = _controller.ActiveVisionBridgeToken;
-
-        if (string.IsNullOrEmpty(baseUrl) || string.IsNullOrEmpty(token))
+        if (!IsRunning)
         {
-            StatusText = "VisionBridge non configurato o inattivo.";
+            StatusText = "Nessuna finestra attiva da catturare.";
             return;
         }
 
         IsBusy = true;
-        StatusText = "Cattura dello screenshot in corso da VisionBridge...";
-        AddLog("[Host] Richiesta GET /screenshot a VisionBridge...");
+        string? baseUrl = _controller.ActiveSensorBaseUrl;
+        string? token = _controller.ActiveSensorToken;
 
-        var result = await _visionClient.CaptureScreenshotAsync(baseUrl, token);
-        if (result.IsSuccess)
+        if (IsSensorConnected && !string.IsNullOrEmpty(baseUrl) && !string.IsNullOrEmpty(token))
         {
-            var screenshot = result.Value;
-            _lastScreenshotBytes = screenshot.PngBytes;
-            IsUniformImage = screenshot.IsUniform;
+            StatusText = "Cattura frame via Tier 2 SensorBridge...";
+            var result = await _sensorClient.CaptureScreenshotAsync(baseUrl, token);
+            if (result.IsSuccess)
+            {
+                ApplyCapturedFrame(result.Value.PngBytes, result.Value.IsUniform, VisionTier.SensorBridge);
+                IsBusy = false;
+                return;
+            }
+        }
 
+        StatusText = "Cattura frame finestra via Tier 1 BaseWindow (Win32)...";
+        byte[] extBytes = await Task.Run(() => _controller.CaptureExternalScreenshot());
+        if (extBytes.Length > 0)
+        {
+            bool uniform = false;
             try
             {
-                var bmp = LoadBitmapFromBytes(screenshot.PngBytes);
-                _lastScreenshotPixelWidth = bmp.PixelWidth > 0 ? bmp.PixelWidth : Math.Max(1, screenshot.Width);
-                _lastScreenshotPixelHeight = bmp.PixelHeight > 0 ? bmp.PixelHeight : Math.Max(1, screenshot.Height);
-                ScreenshotImage = bmp;
-                HasScreenshot = true;
-                UpdateViewportBadge(_lastScreenshotPixelWidth, _lastScreenshotPixelHeight);
-
-                StatusText = $"Screenshot catturato ({_lastScreenshotPixelWidth}×{_lastScreenshotPixelHeight}px, 16:9)" +
-                             (screenshot.IsUniform ? " [ATTENZIONE: Immagine uniforme/nera!]" : "");
-                AddLog($"[Host] Screenshot ricevuto: {_lastScreenshotPixelWidth}×{_lastScreenshotPixelHeight}px ({screenshot.PngBytes.Length} byte)");
+                uniform = PurePngDecoder.IsUniformColor(extBytes);
             }
-            catch (Exception ex)
+            catch
             {
-                StatusText = $"Errore decodifica immagine: {ex.Message}";
-                AddLog($"[Host] Errore decodifica PNG: {ex}");
             }
+
+            ApplyCapturedFrame(extBytes, uniform, VisionTier.BaseWindow);
         }
         else
         {
-            StatusText = $"Errore cattura screenshot: {result.Error.Message}";
-            AddLog($"[Host] Screenshot fallito: {result.Error.Code} - {result.Error.Message}");
+            StatusText = "Impossibile catturare il frame della finestra ospitata.";
+            AddLog("[Host] Cattura finestra Win32 ha restituito 0 byte.");
         }
 
         IsBusy = false;
     }
 
+    private void ApplyCapturedFrame(byte[] pngBytes, bool isUniform, VisionTier tier)
+    {
+        _lastScreenshotBytes = pngBytes;
+        IsUniformImage = isUniform;
+
+        try
+        {
+            var bmp = LoadBitmapFromBytes(pngBytes);
+            _lastScreenshotPixelWidth = bmp.PixelWidth > 0 ? bmp.PixelWidth : 1280;
+            _lastScreenshotPixelHeight = bmp.PixelHeight > 0 ? bmp.PixelHeight : 720;
+            ScreenshotImage = bmp;
+            HasScreenshot = true;
+            UpdateViewportBadge(_lastScreenshotPixelWidth, _lastScreenshotPixelHeight);
+
+            string tierName = tier == VisionTier.SensorBridge ? "Tier 2 Sensor" : "Tier 1 BaseWindow";
+            StatusText = $"Frame catturato ({_lastScreenshotPixelWidth}×{_lastScreenshotPixelHeight}px • {tierName})" +
+                         (isUniform ? " [ATTENZIONE: Frame uniforme!]" : string.Empty);
+            AddLog($"[Host] Screenshot {tierName}: {_lastScreenshotPixelWidth}×{_lastScreenshotPixelHeight}px ({pngBytes.Length} byte)");
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Errore decodifica PNG: {ex.Message}";
+            AddLog($"[Host] Errore decodifica PNG: {ex.Message}");
+        }
+    }
+
     public async Task InspectUiElementsAsync()
     {
-        string? baseUrl = _controller.ActiveVisionBridgeBaseUrl;
-        string? token = _controller.ActiveVisionBridgeToken;
+        string? baseUrl = _controller.ActiveSensorBaseUrl;
+        string? token = _controller.ActiveSensorToken;
 
-        if (string.IsNullOrEmpty(baseUrl) || string.IsNullOrEmpty(token))
+        if (!IsSensorConnected || string.IsNullOrEmpty(baseUrl) || string.IsNullOrEmpty(token))
         {
-            StatusText = "VisionBridge non attivo.";
+            StatusText = "Sensore Tier 2 non attivo per l'ispezione UI.";
             return;
         }
 
         IsBusy = true;
-        StatusText = "Ispezione elementi UI e cattura frame in corso...";
-        AddLog("[Host] Richiesta GET /ui/elements a VisionBridge...");
+        StatusText = "Ispezione albero UI e cattura frame in corso...";
 
-        var shotResult = await _visionClient.CaptureScreenshotAsync(baseUrl, token);
+        var shotResult = await _sensorClient.CaptureScreenshotAsync(baseUrl, token);
         if (shotResult.IsSuccess)
         {
-            _lastScreenshotBytes = shotResult.Value.PngBytes;
-            IsUniformImage = shotResult.Value.IsUniform;
-            var bmp = LoadBitmapFromBytes(shotResult.Value.PngBytes);
-            _lastScreenshotPixelWidth = bmp.PixelWidth > 0 ? bmp.PixelWidth : Math.Max(1, shotResult.Value.Width);
-            _lastScreenshotPixelHeight = bmp.PixelHeight > 0 ? bmp.PixelHeight : Math.Max(1, shotResult.Value.Height);
-            ScreenshotImage = bmp;
-            HasScreenshot = true;
+            ApplyCapturedFrame(shotResult.Value.PngBytes, shotResult.Value.IsUniform, VisionTier.SensorBridge);
         }
 
-        var elementsResult = await _visionClient.GetUiElementsAsync(baseUrl, token);
+        var elementsResult = await _sensorClient.GetUiElementsAsync(baseUrl, token);
         if (elementsResult.IsSuccess)
         {
             var elements = elementsResult.Value;
             _lastUiElements = elements;
             RebuildUiElementsList();
 
-            UiInspectionSummary = $"Rilevati {elements.Count} elementi interattivi uGUI ({UiElementItems.Count} visibili nel filtro).";
-            AddLog($"[Host] Rilevati {elements.Count} elementi interattivi via UguiProvider.");
+            UiInspectionSummary = $"Rilevati {elements.Count} elementi UI ({UiElementItems.Count} nel filtro).";
+            AddLog($"[SensorBridge] Rilevati {elements.Count} elementi interattivi UI.");
 
             if (_lastScreenshotBytes != null && ScreenshotImage is BitmapSource baseBitmap)
             {
@@ -721,7 +1009,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
                 }
                 catch (Exception ex)
                 {
-                    AddLog($"[Host] Errore disegno overlay: {ex.Message}");
+                    AddLog($"[Host] Errore disegno overlay UI: {ex.Message}");
                 }
             }
 
@@ -730,7 +1018,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         else
         {
             StatusText = $"Errore ispezione UI: {elementsResult.Error.Message}";
-            AddLog($"[Host] Ispezione UI fallita: {elementsResult.Error.Code} - {elementsResult.Error.Message}");
+            AddLog($"[SensorBridge] Ispezione UI fallita: {elementsResult.Error.Code} - {elementsResult.Error.Message}");
         }
 
         IsBusy = false;
@@ -741,7 +1029,11 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         UiElementItems.Clear();
         foreach (var dto in _lastUiElements)
         {
-            if (!dto.Visible) continue;
+            if (!dto.Visible)
+            {
+                continue;
+            }
+
             var vm = UiElementItemViewModel.FromDto(dto, _lastScreenshotPixelWidth, _lastScreenshotPixelHeight);
             if (!string.IsNullOrWhiteSpace(_uiSearchFilter))
             {
@@ -752,26 +1044,26 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
                     continue;
                 }
             }
+
             UiElementItems.Add(vm);
         }
     }
 
     public async Task InspectSceneAsync()
     {
-        string? baseUrl = _controller.ActiveVisionBridgeBaseUrl;
-        string? token = _controller.ActiveVisionBridgeToken;
+        string? baseUrl = _controller.ActiveSensorBaseUrl;
+        string? token = _controller.ActiveSensorToken;
 
-        if (string.IsNullOrEmpty(baseUrl) || string.IsNullOrEmpty(token))
+        if (!IsSensorConnected || string.IsNullOrEmpty(baseUrl) || string.IsNullOrEmpty(token))
         {
-            StatusText = "VisionBridge non attivo.";
+            StatusText = "Sensore Tier 2 non attivo per l'ispezione scena.";
             return;
         }
 
         IsBusy = true;
-        StatusText = "Ispezione gerarchia scena, telecamere e renderer in corso...";
-        AddLog($"[Host] Richiesta GET /scene/objects (filtro: '{_sceneFilterText}')...");
+        StatusText = "Ispezione grafo scena e telecamere in corso...";
 
-        var sceneInfoResult = await _visionClient.GetSceneInfoAsync(baseUrl, token);
+        var sceneInfoResult = await _sensorClient.GetSceneInfoAsync(baseUrl, token);
         if (sceneInfoResult.IsSuccess)
         {
             var s = sceneInfoResult.Value;
@@ -783,68 +1075,61 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         }
 
         string? filter = string.IsNullOrWhiteSpace(_sceneFilterText) ? null : _sceneFilterText.Trim();
-        var objectsResult = await _visionClient.InspectSceneObjectsAsync(baseUrl, token, new SceneObjectsQuery(NameFilter: filter));
-        if (objectsResult.IsSuccess)
+        var graphResult = await _sensorClient.InspectSceneAsync(baseUrl, token, new SceneGraphQuery(NameFilter: filter));
+        if (graphResult.IsSuccess)
         {
-            var data = objectsResult.Value;
+            var data = graphResult.Value;
             SceneCameras.Clear();
-            if (data.Cameras != null)
+            foreach (var cam in data.Cameras)
             {
-                foreach (var cam in data.Cameras)
-                {
-                    SceneCameras.Add(SceneCameraItemViewModel.FromDto(cam));
-                }
+                SceneCameras.Add(SceneCameraItemViewModel.FromDto(cam));
             }
 
-            SceneRenderers.Clear();
-            if (data.Renderers != null)
+            SceneNodes.Clear();
+            foreach (var node in data.Nodes)
             {
-                foreach (var ren in data.Renderers)
-                {
-                    SceneRenderers.Add(SceneRendererItemViewModel.FromDto(ren));
-                }
+                SceneNodes.Add(SceneNodeItemViewModel.FromDto(node));
             }
 
-            SceneSummaryText = $"Telecamere: {SceneCameras.Count}  •  Renderer attivi: {SceneRenderers.Count}" +
-                               (filter != null ? $" (Filtro: '{filter}')" : "");
-            StatusText = $"Scena ispezionata: {SceneCameras.Count} telecamere, {SceneRenderers.Count} renderer trovati.";
-            AddLog($"[Host] Scena ispezionata: {SceneCameras.Count} telecamere, {SceneRenderers.Count} renderer.");
+            SceneSummaryText = $"Telecamere: {SceneCameras.Count}  •  Nodi scena: {SceneNodes.Count}" +
+                               (filter != null ? $" (Filtro: '{filter}')" : string.Empty);
+            StatusText = $"Scena ispezionata: {SceneCameras.Count} telecamere, {SceneNodes.Count} nodi.";
+            AddLog($"[SensorBridge] Scena ispezionata: {SceneCameras.Count} telecamere, {SceneNodes.Count} nodi.");
         }
         else
         {
-            SceneSummaryText = $"Errore ispezione scena: {objectsResult.Error.Message}";
+            SceneSummaryText = $"Errore ispezione scena: {graphResult.Error.Message}";
             StatusText = SceneSummaryText;
-            AddLog($"[Host] Errore /scene/objects: {objectsResult.Error.Message}");
+            AddLog($"[SensorBridge] Errore /scene/nodes: {graphResult.Error.Message}");
         }
 
         IsBusy = false;
     }
 
-    private void StartVisionBridgeMonitoring()
+    private void StartSensorMonitoring()
     {
-        StopVisionBridgeMonitoring();
+        StopSensorMonitoring();
         _visionMonitorCts = new CancellationTokenSource();
         var ct = _visionMonitorCts.Token;
 
         _ = Task.Run(async () =>
         {
-            string? baseUrl = _controller.ActiveVisionBridgeBaseUrl;
-            string? token = _controller.ActiveVisionBridgeToken;
-            if (string.IsNullOrEmpty(baseUrl) || string.IsNullOrEmpty(token)) return;
+            string? baseUrl = _controller.ActiveSensorBaseUrl;
+            string? token = _controller.ActiveSensorToken;
+            if (string.IsNullOrEmpty(baseUrl) || string.IsNullOrEmpty(token))
+            {
+                return;
+            }
 
-            VisionStatusText = $"In ascolto su {baseUrl} (In attesa handshake...)";
-
-            // 1. Initial Handshake Loop
             bool connected = false;
             for (int i = 0; i < 30 && !ct.IsCancellationRequested && IsRunning; i++)
             {
                 await Task.Delay(1000, ct);
 
-                var helloResult = await _visionClient.GetHelloAsync(baseUrl, token, ct);
+                var helloResult = await _sensorClient.GetHelloAsync(baseUrl, token, ct);
                 if (helloResult.IsSuccess)
                 {
-                    var hello = helloResult.Value;
-                    await RefreshBridgeTelemetryAsync(baseUrl, token, hello, isInitialHandshake: true, ct);
+                    await RefreshSensorTelemetryAsync(baseUrl, token, helloResult.Value, isInitialHandshake: true, ct);
                     connected = true;
                     break;
                 }
@@ -854,58 +1139,56 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             {
                 Application.Current?.Dispatcher.Invoke(() =>
                 {
-                    VisionStatusText = "Non rilevato (Plugin BepInEx non presente o in caricamento)";
+                    VisionStatusText = "Modalità Tier 1 BaseWindow attiva (Nessun sensore in-game rilevato)";
+                    VisionCapabilitiesText = "Screenshot finestra Win32 + Input Mouse/Tastiera/Gamepad fallback attivi.";
                 });
                 return;
             }
 
-            // 2. Periodic Live Telemetry Loop (tracks scene changes, resolution, and AI virtual mouse isolation state)
             while (!ct.IsCancellationRequested && IsRunning)
             {
                 await Task.Delay(2500, ct);
-                if (ct.IsCancellationRequested || !IsRunning) break;
+                if (ct.IsCancellationRequested || !IsRunning)
+                {
+                    break;
+                }
 
-                var helloResult = await _visionClient.GetHelloAsync(baseUrl, token, ct);
+                var helloResult = await _sensorClient.GetHelloAsync(baseUrl, token, ct);
                 if (helloResult.IsSuccess)
                 {
-                    await RefreshBridgeTelemetryAsync(baseUrl, token, helloResult.Value, isInitialHandshake: false, ct);
+                    await RefreshSensorTelemetryAsync(baseUrl, token, helloResult.Value, isInitialHandshake: false, ct);
                 }
             }
         }, ct);
     }
 
-    private async Task RefreshBridgeTelemetryAsync(
+    private async Task RefreshSensorTelemetryAsync(
         string baseUrl,
         string token,
         VisionHelloDto hello,
         bool isInitialHandshake,
         CancellationToken ct)
     {
-        var capResult = await _visionClient.GetCapabilitiesAsync(baseUrl, token, ct);
-        var sceneResult = await _visionClient.GetSceneInfoAsync(baseUrl, token, ct);
+        var capResult = await _sensorClient.GetCapabilitiesAsync(baseUrl, token, ct);
+        var sceneResult = await _sensorClient.GetSceneInfoAsync(baseUrl, token, ct);
 
-        string capsText = "Capabilities attive";
+        string capsText = "Tier 2 SensorBridge attivo";
         bool isolated = _isVirtualMouseIsolated;
+        List<string> capsList = new();
 
         if (capResult.IsSuccess)
         {
             var c = capResult.Value;
-            var capList = new List<string>();
-            if (c.Ugui) capList.Add("uGUI");
-            if (c.EventSystem) capList.Add("EventSystem");
-            if (c.UiToolkit) capList.Add("UI Toolkit");
-            if (c.LegacyInput) capList.Add("Legacy Input");
-            if (c.InputSystem) capList.Add("InputSystem");
-            if (c.Screenshot) capList.Add($"Screenshot ({c.ScreenshotMethod})");
-            capsText = string.Join(" • ", capList.ToArray());
+            capsList = c.Capabilities.ToList();
+            capsText = capsList.Count > 0 ? string.Join(" • ", capsList) : "screenshot";
 
-            if (!string.IsNullOrEmpty(c.InputClickStatus))
+            if (!string.IsNullOrEmpty(c.PointerMethod))
             {
-                if (c.InputClickStatus.Contains("[ISOLATED]", StringComparison.OrdinalIgnoreCase))
+                if (c.PointerMethod.Contains("[ISOLATED]", StringComparison.OrdinalIgnoreCase))
                 {
                     isolated = true;
                 }
-                else if (c.InputClickStatus.Contains("[PHYSICAL_ACTIVE]", StringComparison.OrdinalIgnoreCase))
+                else if (c.PointerMethod.Contains("[PHYSICAL_ACTIVE]", StringComparison.OrdinalIgnoreCase))
                 {
                     isolated = false;
                 }
@@ -914,8 +1197,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
         if (hello.ScreenWidth > 0 && hello.ScreenHeight > 0)
         {
-            _gameInternalWidth = hello.ScreenWidth;
-            _gameInternalHeight = hello.ScreenHeight;
+            _targetInternalWidth = hello.ScreenWidth;
+            _targetInternalHeight = hello.ScreenHeight;
         }
 
         string sceneBadge = _activeSceneBadge;
@@ -924,11 +1207,16 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             sceneBadge = $"Scena: {sceneResult.Value.ActiveSceneName} ({sceneResult.Value.RootCount} root)";
         }
 
+        string engineDesc = string.IsNullOrWhiteSpace(hello.EngineName)
+            ? "Sensor"
+            : $"{hello.EngineName} {hello.EngineVariant} {hello.EngineVersion}".Trim();
+
         void UpdateUi()
         {
-            VisionStatusText = $"Connesso • Unity {hello.UnityVersion} ({hello.ScreenWidth}×{hello.ScreenHeight})";
+            _activeCapabilities = capsList;
+            VisionStatusText = $"Tier 2 Connesso • {engineDesc} ({hello.ScreenWidth}×{hello.ScreenHeight})";
             VisionCapabilitiesText = capsText;
-            IsVisionConnected = true;
+            IsSensorConnected = true;
             IsVirtualMouseIsolated = isolated;
             ActiveSceneBadge = sceneBadge;
             UpdateViewportBadge(hello.ScreenWidth, hello.ScreenHeight);
@@ -936,8 +1224,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             if (isInitialHandshake)
             {
                 ViewportPresetChanged?.Invoke();
-                AddLog($"[VisionBridge] Handshake riuscito! Protocollo {hello.ProtocolVersion}, Unity {hello.UnityVersion}");
-                AddLog($"[VisionBridge] Capabilities attive: {capsText}");
+                AddLog($"[SensorBridge] Handshake v{hello.ProtocolVersion} riuscito! Engine: {engineDesc}");
+                AddLog($"[SensorBridge] Capabilities: {capsText}");
             }
         }
 
@@ -951,7 +1239,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
-    private void StopVisionBridgeMonitoring()
+    private void StopSensorMonitoring()
     {
         _visionMonitorCts?.Cancel();
         _visionMonitorCts?.Dispose();
@@ -979,18 +1267,25 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
         {
             dc.DrawImage(baseImage, new Rect(0, 0, baseImage.PixelWidth, baseImage.PixelHeight));
 
-            var pen = new Pen(new SolidColorBrush(Color.FromRgb(56, 189, 248)), 2); // #38BDF8 cyan
+            var pen = new Pen(new SolidColorBrush(Color.FromRgb(56, 189, 248)), 2);
             var fillBrush = new SolidColorBrush(Color.FromArgb(35, 56, 189, 248));
             var font = new Typeface("Segoe UI");
 
             foreach (var elem in elements)
             {
-                if (!elem.Visible) continue;
+                if (!elem.Visible)
+                {
+                    continue;
+                }
+
                 var rect = new Rect(elem.PixelRect.X, elem.PixelRect.Y, elem.PixelRect.Width, elem.PixelRect.Height);
                 dc.DrawRectangle(fillBrush, pen, rect);
 
                 string label = $"{elem.Type}: {(string.IsNullOrEmpty(elem.Text) ? elem.Id : elem.Text)}";
-                if (label.Length > 28) label = string.Concat(label.AsSpan(0, 28), "...");
+                if (label.Length > 28)
+                {
+                    label = string.Concat(label.AsSpan(0, 28), "...");
+                }
 
                 var formattedText = new FormattedText(
                     label,
@@ -1001,7 +1296,10 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
                     Brushes.Yellow,
                     1.0);
 
-                dc.DrawRectangle(new SolidColorBrush(Color.FromArgb(190, 0, 0, 0)), null, new Rect(rect.X, Math.Max(0, rect.Y - 18), formattedText.Width + 6, 18));
+                dc.DrawRectangle(
+                    new SolidColorBrush(Color.FromArgb(190, 0, 0, 0)),
+                    null,
+                    new Rect(rect.X, Math.Max(0, rect.Y - 18), formattedText.Width + 6, 18));
                 dc.DrawText(formattedText, new Point(rect.X + 3, Math.Max(0, rect.Y - 18)));
             }
         }
@@ -1037,8 +1335,9 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             EmbeddingMode = "Nessuno";
             VisionStatusText = "Inattivo (Processo terminato)";
             ActiveSceneBadge = "Scena: -";
-            IsVisionConnected = false;
+            IsSensorConnected = false;
             IsVirtualMouseIsolated = false;
+            _activeCapabilities.Clear();
         }
 
         if (Application.Current?.Dispatcher != null)
@@ -1061,12 +1360,14 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             {
                 LogEntries.RemoveAt(0);
             }
+
             LogEntries.Add(structured.FullText);
 
             if (_allStructuredLogs.Count > 1000)
             {
                 _allStructuredLogs.RemoveAt(0);
             }
+
             _allStructuredLogs.Add(structured);
 
             if (structured.MatchesFilter(_logSearchText, _onlyWarningsAndErrors))
@@ -1075,6 +1376,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
                 {
                     FilteredLogEntries.RemoveAt(0);
                 }
+
                 FilteredLogEntries.Add(structured);
             }
         }
@@ -1117,6 +1419,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
             {
                 sb.AppendLine(item.FullText);
             }
+
             Clipboard.SetText(sb.ToString());
             StatusText = $"Copiate {FilteredLogEntries.Count} righe di log negli appunti.";
         }
@@ -1133,10 +1436,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged, IDisposable
 
     public void Dispose()
     {
-        _resizeDebounceCts?.Cancel();
-        _resizeDebounceCts?.Dispose();
-        _resizeDebounceCts = null;
-        StopVisionBridgeMonitoring();
+        StopSensorMonitoring();
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;

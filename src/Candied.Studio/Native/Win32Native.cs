@@ -1,12 +1,10 @@
 using System;
 using System.Runtime.InteropServices;
-using System.Text;
 
 namespace Candied.Studio.Native;
 
 internal static class Win32Native
 {
-    // Window Styles
     public const int GWL_STYLE = -16;
     public const int WS_VISIBLE = 0x10000000;
     public const int WS_CHILD = 0x40000000;
@@ -18,7 +16,6 @@ internal static class Win32Native
     public const int WS_MINIMIZEBOX = 0x00020000;
     public const int WS_MAXIMIZEBOX = 0x00010000;
 
-    // ShowWindow Commands
     public const int SW_HIDE = 0;
     public const int SW_SHOWNORMAL = 1;
     public const int SW_SHOWMINIMIZED = 2;
@@ -30,17 +27,15 @@ internal static class Win32Native
     public const int SW_SHOWNA = 8;
     public const int SW_RESTORE = 9;
 
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool IsHungAppWindow(IntPtr hWnd);
+    public const int WM_SIZE = 0x0005;
+    public const int WM_ERASEBKGND = 0x0014;
+    public const uint WM_KEYDOWN = 0x0100;
+    public const uint WM_KEYUP = 0x0101;
+    public const uint WM_MOUSEMOVE = 0x0200;
+    public const int BLACK_BRUSH = 4;
 
     public static readonly IntPtr HWND_TOP = IntPtr.Zero;
 
-    // SetWindowPos Flags
     public const uint SWP_NOSIZE = 0x0001;
     public const uint SWP_NOMOVE = 0x0002;
     public const uint SWP_NOZORDER = 0x0004;
@@ -48,9 +43,20 @@ internal static class Win32Native
     public const uint SWP_FRAMECHANGED = 0x0020;
     public const uint SWP_SHOWWINDOW = 0x0040;
 
-    // Job Object Flags
     public const int JobObjectExtendedLimitInformation = 9;
     public const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
+
+    public const uint TH32CS_SNAPPROCESS = 0x00000002;
+    public const uint PW_CLIENTONLY = 1;
+    public const uint PW_RENDERFULLCONTENT = 2;
+
+    public const uint INPUT_MOUSE = 0;
+    public const uint MOUSEEVENTF_MOVE = 0x0001;
+    public const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
+    public const uint MOUSEEVENTF_LEFTUP = 0x0004;
+    public const uint MOUSEEVENTF_RIGHTDOWN = 0x0008;
+    public const uint MOUSEEVENTF_RIGHTUP = 0x0010;
+    public const uint MOUSEEVENTF_ABSOLUTE = 0x8000;
 
     [StructLayout(LayoutKind.Sequential)]
     public struct IO_COUNTERS
@@ -88,6 +94,77 @@ internal static class Win32Native
         public UIntPtr PeakJobMemoryLimit;
     }
 
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+    public struct PROCESSENTRY32
+    {
+        public uint dwSize;
+        public uint cntUsage;
+        public uint th32ProcessID;
+        public IntPtr th32DefaultHeapID;
+        public uint th32ModuleID;
+        public uint cntThreads;
+        public uint th32ParentProcessID;
+        public int pcPriClassBase;
+        public uint dwFlags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+        public string szExeFile;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RECT
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct POINT
+    {
+        public int X;
+        public int Y;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MSG
+    {
+        public IntPtr hwnd;
+        public uint message;
+        public UIntPtr wParam;
+        public IntPtr lParam;
+        public uint time;
+        public POINT pt;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct INPUT
+    {
+        public uint type;
+        public MOUSEINPUT mi;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MOUSEINPUT
+    {
+        public int dx;
+        public int dy;
+        public uint mouseData;
+        public uint dwFlags;
+        public uint time;
+        public IntPtr dwExtraInfo;
+    }
+
+    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsHungAppWindow(IntPtr hWnd);
+
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern IntPtr CreateJobObject(IntPtr lpJobAttributes, string? lpName);
 
@@ -107,7 +184,6 @@ internal static class Win32Native
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool CloseHandle(IntPtr hObject);
 
-    // User32 Window Operations
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern IntPtr CreateWindowEx(
         int dwExStyle,
@@ -173,8 +249,6 @@ internal static class Win32Native
         int nHeight,
         [MarshalAs(UnmanagedType.Bool)] bool bRepaint);
 
-    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
@@ -200,27 +274,8 @@ internal static class Win32Native
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool IsWindowVisible(IntPtr hWnd);
 
-    // Toolhelp32 for Process Tree Walking
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern IntPtr CreateToolhelp32Snapshot(uint dwFlags, uint th32ProcessID);
-
-    public const uint TH32CS_SNAPPROCESS = 0x00000002;
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
-    public struct PROCESSENTRY32
-    {
-        public uint dwSize;
-        public uint cntUsage;
-        public uint th32ProcessID;
-        public IntPtr th32DefaultHeapID;
-        public uint th32ModuleID;
-        public uint cntThreads;
-        public uint th32ParentProcessID;
-        public int pcPriClassBase;
-        public uint dwFlags;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
-        public string szExeFile;
-    }
 
     [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -229,34 +284,6 @@ internal static class Win32Native
     [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool Process32Next(IntPtr hSnapshot, ref PROCESSENTRY32 lppe);
-
-    // GDI & Window Capture
-    [StructLayout(LayoutKind.Sequential)]
-    public struct RECT
-    {
-        public int Left;
-        public int Top;
-        public int Right;
-        public int Bottom;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct POINT
-    {
-        public int X;
-        public int Y;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct MSG
-    {
-        public IntPtr hwnd;
-        public uint message;
-        public UIntPtr wParam;
-        public IntPtr lParam;
-        public uint time;
-        public POINT pt;
-    }
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -269,6 +296,13 @@ internal static class Win32Native
     [DllImport("user32.dll")]
     public static extern IntPtr DispatchMessage(ref MSG lpMsg);
 
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    public static extern uint MapVirtualKey(uint uCode, uint uMapType);
+
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool GetClientRect(IntPtr hWnd, out RECT lpRect);
@@ -276,9 +310,6 @@ internal static class Win32Native
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
-
-    public const uint PW_CLIENTONLY = 1;
-    public const uint PW_RENDERFULLCONTENT = 2;
 
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -321,40 +352,11 @@ internal static class Win32Native
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool DeleteDC(IntPtr hdc);
 
-    public const int WM_ERASEBKGND = 0x0014;
-    public const int WM_SIZE = 0x0005;
-    public const int BLACK_BRUSH = 4;
-
     [DllImport("gdi32.dll")]
     public static extern IntPtr GetStockObject(int fnObject);
 
     [DllImport("user32.dll")]
     public static extern int FillRect(IntPtr hDC, [In] ref RECT lprc, IntPtr hbr);
-
-    // Input Simulation
-    [StructLayout(LayoutKind.Sequential)]
-    public struct INPUT
-    {
-        public uint type;
-        public MOUSEINPUT mi;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct MOUSEINPUT
-    {
-        public int dx;
-        public int dy;
-        public uint mouseData;
-        public uint dwFlags;
-        public uint time;
-        public IntPtr dwExtraInfo;
-    }
-
-    public const uint INPUT_MOUSE = 0;
-    public const uint MOUSEEVENTF_MOVE = 0x0001;
-    public const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
-    public const uint MOUSEEVENTF_LEFTUP = 0x0004;
-    public const uint MOUSEEVENTF_ABSOLUTE = 0x8000;
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
@@ -389,7 +391,10 @@ internal static class Win32Native
 
     public static byte[] CaptureWindowPng(IntPtr hwnd)
     {
-        if (hwnd == IntPtr.Zero) return Array.Empty<byte>();
+        if (hwnd == IntPtr.Zero)
+        {
+            return Array.Empty<byte>();
+        }
 
         GetClientRect(hwnd, out RECT clientRect);
         int width = clientRect.Right - clientRect.Left;
@@ -414,7 +419,10 @@ internal static class Win32Native
             }
         }
 
-        if (width <= 0 || height <= 0) return Array.Empty<byte>();
+        if (width <= 0 || height <= 0)
+        {
+            return Array.Empty<byte>();
+        }
 
         POINT pt = new POINT { X = 0, Y = 0 };
         ClientToScreen(hwnd, ref pt);
@@ -451,25 +459,44 @@ internal static class Win32Native
         }
     }
 
-    public static void SendMouseClick(IntPtr hwnd, int clientX, int clientY)
+    public static void SendMouseMove(IntPtr hwnd, int clientX, int clientY)
     {
-        if (hwnd == IntPtr.Zero) return;
+        if (hwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        int lParam = ((clientY & 0xFFFF) << 16) | (clientX & 0xFFFF);
+        _ = PostMessage(hwnd, WM_MOUSEMOVE, IntPtr.Zero, new IntPtr(lParam));
+    }
+
+    public static void SendMouseClick(IntPtr hwnd, int clientX, int clientY, int button = 0)
+    {
+        if (hwnd == IntPtr.Zero)
+        {
+            return;
+        }
 
         POINT pt = new POINT { X = clientX, Y = clientY };
         ClientToScreen(hwnd, ref pt);
 
-        int screenWidth = GetSystemMetrics(0); // SM_CXSCREEN
-        int screenHeight = GetSystemMetrics(1); // SM_CYSCREEN
+        int screenWidth = GetSystemMetrics(0);
+        int screenHeight = GetSystemMetrics(1);
 
-        if (screenWidth <= 1 || screenHeight <= 1) return;
+        if (screenWidth <= 1 || screenHeight <= 1)
+        {
+            return;
+        }
 
         int absX = (pt.X * 65535) / (screenWidth - 1);
         int absY = (pt.Y * 65535) / (screenHeight - 1);
 
-        IntPtr rootHwnd = GetAncestor(hwnd, 2 /* GA_ROOT */);
-        if (rootHwnd == IntPtr.Zero) rootHwnd = hwnd;
+        IntPtr rootHwnd = GetAncestor(hwnd, 2);
+        if (rootHwnd == IntPtr.Zero)
+        {
+            rootHwnd = hwnd;
+        }
 
-        // Force foreground and input focus to target window
         IntPtr foreHwnd = GetForegroundWindow();
         uint foreThread = foreHwnd != IntPtr.Zero ? GetWindowThreadProcessId(foreHwnd, out _) : 0;
         uint curThread = GetCurrentThreadId();
@@ -488,13 +515,14 @@ internal static class Win32Native
             AttachThreadInput(curThread, foreThread, false);
         }
 
-        // Set cursor position physically
         SetCursorPos(pt.X, pt.Y);
-        System.Threading.Thread.Sleep(50);
+        System.Threading.Thread.Sleep(40);
 
-        // Send Move first and allow game to receive hover
-        INPUT[] moveInput = new INPUT[]
-        {
+        uint downFlag = button == 1 ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_LEFTDOWN;
+        uint upFlag = button == 1 ? MOUSEEVENTF_RIGHTUP : MOUSEEVENTF_LEFTUP;
+
+        INPUT[] moveInput =
+        [
             new INPUT
             {
                 type = INPUT_MOUSE,
@@ -502,18 +530,15 @@ internal static class Win32Native
                 {
                     dx = absX,
                     dy = absY,
-                    dwFlags = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE,
-                    time = 0,
-                    dwExtraInfo = IntPtr.Zero
+                    dwFlags = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE
                 }
             }
-        };
+        ];
         _ = SendInput(1, moveInput, Marshal.SizeOf<INPUT>());
-        System.Threading.Thread.Sleep(50);
+        System.Threading.Thread.Sleep(40);
 
-        // Send LeftDown and hold across game frames
-        INPUT[] downInput = new INPUT[]
-        {
+        INPUT[] downInput =
+        [
             new INPUT
             {
                 type = INPUT_MOUSE,
@@ -521,18 +546,15 @@ internal static class Win32Native
                 {
                     dx = absX,
                     dy = absY,
-                    dwFlags = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_LEFTDOWN,
-                    time = 0,
-                    dwExtraInfo = IntPtr.Zero
+                    dwFlags = MOUSEEVENTF_ABSOLUTE | downFlag
                 }
             }
-        };
+        ];
         _ = SendInput(1, downInput, Marshal.SizeOf<INPUT>());
-        System.Threading.Thread.Sleep(120);
+        System.Threading.Thread.Sleep(90);
 
-        // Send LeftUp to complete click
-        INPUT[] upInput = new INPUT[]
-        {
+        INPUT[] upInput =
+        [
             new INPUT
             {
                 type = INPUT_MOUSE,
@@ -540,13 +562,39 @@ internal static class Win32Native
                 {
                     dx = absX,
                     dy = absY,
-                    dwFlags = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_LEFTUP,
-                    time = 0,
-                    dwExtraInfo = IntPtr.Zero
+                    dwFlags = MOUSEEVENTF_ABSOLUTE | upFlag
                 }
             }
-        };
+        ];
         _ = SendInput(1, upInput, Marshal.SizeOf<INPUT>());
-        System.Threading.Thread.Sleep(50);
+        System.Threading.Thread.Sleep(40);
+    }
+
+    public static bool SendKeyState(IntPtr hwnd, int virtualKeyCode, bool isDown)
+    {
+        if (hwnd == IntPtr.Zero || virtualKeyCode <= 0)
+        {
+            return false;
+        }
+
+        uint scanCode = MapVirtualKey((uint)virtualKeyCode, 0);
+        uint lParamVal = 1u | ((scanCode & 0xFFu) << 16);
+        if (!isDown)
+        {
+            lParamVal |= (1u << 30) | (1u << 31);
+        }
+
+        return PostMessage(hwnd, isDown ? WM_KEYDOWN : WM_KEYUP, new IntPtr(virtualKeyCode), new IntPtr(unchecked((int)lParamVal)));
+    }
+
+    public static bool SendKeyTap(IntPtr hwnd, int virtualKeyCode, int holdMs = 80)
+    {
+        if (!SendKeyState(hwnd, virtualKeyCode, isDown: true))
+        {
+            return false;
+        }
+
+        System.Threading.Thread.Sleep(Math.Clamp(holdMs, 16, 1000));
+        return SendKeyState(hwnd, virtualKeyCode, isDown: false);
     }
 }

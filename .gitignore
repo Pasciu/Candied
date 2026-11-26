@@ -11,8 +11,12 @@ obj/
 .idea/
 .vscode/
 
-## Tool runtime artifacts
+## Tool runtime artifacts & local secrets
 .workbench/
 .candied/
 publish/
 mods/
+mcp_config.json
+.env
+.env.*
+*.log

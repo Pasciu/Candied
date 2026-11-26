@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -6,11 +7,19 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
+using Candied.Core.Analysis;
+using Candied.Core.Capabilities;
+using Candied.Core.Errors;
 using Candied.Core.Models;
 using Candied.Core.Ports;
 using Candied.Core.UseCases;
 using Candied.Primitives;
-using Candied.Core.Analysis;
+using Candied.Vision.Analysis;
+using Candied.Vision.Controls;
+using Candied.Vision.Hosting;
+using Candied.Vision.Models;
+using Candied.Vision.Ports;
+using Candied.Vision.Protocol;
 
 namespace Candied.Agent;
 
@@ -23,574 +32,450 @@ public sealed class AgentWorkbenchService
         WriteIndented = false
     };
 
-    private readonly ScaffoldModUseCase _scaffoldModUseCase;
-    private readonly BuildModUseCase _buildModUseCase;
-    private readonly ReadLogsUseCase _readLogsUseCase;
-    private readonly GetTypeDetailUseCase _getTypeDetailUseCase;
-    private readonly IGameDetector _gameDetector;
-    private readonly IDocumentationGenerator? _documentationGenerator;
-    private readonly CandiedStorageLayout _storageLayout;
+    private static readonly string[] BaseWindowCapabilityList =
+    [
+        VisionConstants.CapScreenshot,
+        VisionConstants.CapPointer,
+        VisionConstants.CapKeyboard,
+        VisionConstants.CapGamepad
+    ];
 
-    private readonly InspectGameEnvironmentUseCase? _inspectGameEnvironmentUseCase;
-    private readonly DecompileAssemblyUseCase? _decompileAssemblyUseCase;
-    private readonly SearchGameSymbolsUseCase? _searchGameSymbolsUseCase;
+    private static readonly string[] BuiltInFallbackActionList =
+    [
+        "Confirm",
+        "Cancel",
+        "Pause",
+        "MoveUp",
+        "MoveDown",
+        "MoveLeft",
+        "MoveRight"
+    ];
+
+    private readonly InspectTargetUseCase? _inspectTargetUseCase;
+    private readonly SetupTargetEnvironmentUseCase? _setupTargetUseCase;
+    private readonly RollbackTargetEnvironmentUseCase? _rollbackTargetUseCase;
+    private readonly ExtractCodeModuleUseCase? _extractCodeUseCase;
+    private readonly SearchSymbolsUseCase? _searchSymbolsUseCase;
+    private readonly SearchCodeUseCase? _searchCodeUseCase;
+    private readonly GetTypeDetailUseCase? _getTypeDetailUseCase;
     private readonly SaveResearchNotesUseCase? _saveResearchNotesUseCase;
-    private readonly SetupGameEnvironmentUseCase? _setupGameEnvironmentUseCase;
-    private readonly RollbackGameEnvironmentUseCase? _rollbackGameEnvironmentUseCase;
-    private readonly GetGameProcessStatusUseCase? _getGameProcessStatusUseCase;
-    private readonly LaunchGameUseCase? _launchGameUseCase;
-    private readonly StopGameUseCase? _stopGameUseCase;
+    private readonly IndexAssetsUseCase? _indexAssetsUseCase;
     private readonly DiscoverAssetsUseCase? _discoverAssetsUseCase;
     private readonly ExtractAssetsUseCase? _extractAssetsUseCase;
-    private readonly IndexAssetsUseCase? _indexAssetsUseCase;
-    private readonly IVisionBridgeClient? _visionBridgeClient;
-    private readonly IRegisteredGameRegistry? _gameRegistry;
-    private readonly IStudioClient? _studioClient;
-    private readonly SearchGameCodeUseCase? _searchGameCodeUseCase;
-    private readonly AddProjectReferenceUseCase? _addProjectReferenceUseCase;
+    private readonly ScaffoldModUseCase? _scaffoldModUseCase;
+    private readonly BuildModUseCase? _buildModUseCase;
+    private readonly ReadRuntimeLogsUseCase? _readLogsUseCase;
+    private readonly ManageTargetProcessUseCase? _manageProcessUseCase;
+    private readonly ITargetPlatformRegistry? _platformRegistry;
+    private readonly CandiedStorageLayout _storageLayout;
+    private readonly IStudioHostClient? _studioClient;
+    private readonly IVisionSensorClient? _visionSensorClient;
+    private readonly IGameControlProfileStore? _controlProfileStore;
+    private readonly IRecentTargetsStore? _recentTargetsStore;
+    private readonly IReadOnlyList<IPlatformToolProvider> _platformToolProviders;
+    private readonly IReadOnlyList<IPlatformGuideProvider> _platformGuideProviders;
 
-    private string? _activeGameDatabasePath;
-    private string? _activeGameDirectory;
+    private string? _activeTargetPath;
+    private string? _activeRunnerPath;
+    private TargetDescriptor? _activeTarget;
+    private string? _activeDatabasePath;
 
     public AgentWorkbenchService(
-        ScaffoldModUseCase scaffoldModUseCase,
-        BuildModUseCase buildModUseCase,
-        ReadLogsUseCase readLogsUseCase,
-        GetTypeDetailUseCase getTypeDetailUseCase,
-        IGameDetector gameDetector,
-        IDocumentationGenerator? documentationGenerator = null,
-        CandiedStorageLayout? storageLayout = null,
-        InspectGameEnvironmentUseCase? inspectGameEnvironmentUseCase = null,
-        DecompileAssemblyUseCase? decompileAssemblyUseCase = null,
-        SearchGameSymbolsUseCase? searchGameSymbolsUseCase = null,
+        InspectTargetUseCase? inspectTargetUseCase = null,
+        SetupTargetEnvironmentUseCase? setupTargetUseCase = null,
+        RollbackTargetEnvironmentUseCase? rollbackTargetUseCase = null,
+        ExtractCodeModuleUseCase? extractCodeUseCase = null,
+        SearchSymbolsUseCase? searchSymbolsUseCase = null,
+        SearchCodeUseCase? searchCodeUseCase = null,
+        GetTypeDetailUseCase? getTypeDetailUseCase = null,
         SaveResearchNotesUseCase? saveResearchNotesUseCase = null,
-        SetupGameEnvironmentUseCase? setupGameEnvironmentUseCase = null,
-        RollbackGameEnvironmentUseCase? rollbackGameEnvironmentUseCase = null,
-        GetGameProcessStatusUseCase? getGameProcessStatusUseCase = null,
-        LaunchGameUseCase? launchGameUseCase = null,
-        StopGameUseCase? stopGameUseCase = null,
+        IndexAssetsUseCase? indexAssetsUseCase = null,
         DiscoverAssetsUseCase? discoverAssetsUseCase = null,
         ExtractAssetsUseCase? extractAssetsUseCase = null,
-        IndexAssetsUseCase? indexAssetsUseCase = null,
-        IVisionBridgeClient? visionBridgeClient = null,
-        IRegisteredGameRegistry? gameRegistry = null,
-        IStudioClient? studioClient = null,
-        SearchGameCodeUseCase? searchGameCodeUseCase = null,
-        AddProjectReferenceUseCase? addProjectReferenceUseCase = null)
+        ScaffoldModUseCase? scaffoldModUseCase = null,
+        BuildModUseCase? buildModUseCase = null,
+        ReadRuntimeLogsUseCase? readLogsUseCase = null,
+        ManageTargetProcessUseCase? manageProcessUseCase = null,
+        ITargetPlatformRegistry? platformRegistry = null,
+        CandiedStorageLayout? storageLayout = null,
+        IStudioHostClient? studioClient = null,
+        IVisionSensorClient? visionSensorClient = null,
+        IGameControlProfileStore? controlProfileStore = null,
+        IRecentTargetsStore? recentTargetsStore = null,
+        IEnumerable<IPlatformToolProvider>? platformToolProviders = null,
+        IEnumerable<IPlatformGuideProvider>? platformGuideProviders = null)
     {
+        _inspectTargetUseCase = inspectTargetUseCase;
+        _setupTargetUseCase = setupTargetUseCase;
+        _rollbackTargetUseCase = rollbackTargetUseCase;
+        _extractCodeUseCase = extractCodeUseCase;
+        _searchSymbolsUseCase = searchSymbolsUseCase;
+        _searchCodeUseCase = searchCodeUseCase;
+        _getTypeDetailUseCase = getTypeDetailUseCase;
+        _saveResearchNotesUseCase = saveResearchNotesUseCase;
+        _indexAssetsUseCase = indexAssetsUseCase;
+        _discoverAssetsUseCase = discoverAssetsUseCase;
+        _extractAssetsUseCase = extractAssetsUseCase;
         _scaffoldModUseCase = scaffoldModUseCase;
         _buildModUseCase = buildModUseCase;
         _readLogsUseCase = readLogsUseCase;
-        _getTypeDetailUseCase = getTypeDetailUseCase;
-        _gameDetector = gameDetector;
-        _documentationGenerator = documentationGenerator;
+        _manageProcessUseCase = manageProcessUseCase;
+        _platformRegistry = platformRegistry;
         _storageLayout = storageLayout ?? new CandiedStorageLayout(ResolveDefaultWorkspaceRoot());
-
-        _inspectGameEnvironmentUseCase = inspectGameEnvironmentUseCase;
-        _decompileAssemblyUseCase = decompileAssemblyUseCase;
-        _searchGameSymbolsUseCase = searchGameSymbolsUseCase;
-        _saveResearchNotesUseCase = saveResearchNotesUseCase;
-        _setupGameEnvironmentUseCase = setupGameEnvironmentUseCase;
-        _rollbackGameEnvironmentUseCase = rollbackGameEnvironmentUseCase;
-        _getGameProcessStatusUseCase = getGameProcessStatusUseCase;
-        _launchGameUseCase = launchGameUseCase;
-        _stopGameUseCase = stopGameUseCase;
-        _discoverAssetsUseCase = discoverAssetsUseCase;
-        _extractAssetsUseCase = extractAssetsUseCase;
-        _indexAssetsUseCase = indexAssetsUseCase;
-        _visionBridgeClient = visionBridgeClient;
-        _gameRegistry = gameRegistry;
         _studioClient = studioClient;
-        _searchGameCodeUseCase = searchGameCodeUseCase;
-        _addProjectReferenceUseCase = addProjectReferenceUseCase;
+        _visionSensorClient = visionSensorClient;
+        _controlProfileStore = controlProfileStore;
+        _recentTargetsStore = recentTargetsStore;
+        _platformToolProviders = platformToolProviders?.ToList() ?? [];
+        _platformGuideProviders = platformGuideProviders?.ToList() ?? [];
     }
 
     public CandiedStorageLayout StorageLayout => _storageLayout;
 
-    public async Task<string> InspectGameEnvironmentAsync(
-        string gameDirectory,
+    public IReadOnlyList<PlatformToolDefinition> GetPlatformTools() =>
+        _platformToolProviders.SelectMany(p => p.GetTools()).ToList();
+
+    public IReadOnlyList<PlatformModdingGuide> GetPlatformGuides() =>
+        _platformGuideProviders.Select(p => p.GetGuide()).ToList();
+
+    public async Task<string> InspectTargetAsync(
+        string targetPath,
+        string? runnerPath = null,
         CancellationToken ct = default)
     {
-        Result<GameEnvironment, Candied.Core.Errors.DomainError> detectResult;
-        if (_inspectGameEnvironmentUseCase != null)
+        var inspectRes = await ResolveAndInspectAsync(targetPath, runnerPath, ct).ConfigureAwait(false);
+        if (inspectRes.IsFailure)
         {
-            detectResult = await _inspectGameEnvironmentUseCase.ExecuteAsync(gameDirectory, ct).ConfigureAwait(false);
-        }
-        else
-        {
-            var rawDetect = await _gameDetector.DetectGameAsync(gameDirectory, ct).ConfigureAwait(false);
-            detectResult = rawDetect.IsSuccess
-                ? Result.Ok<GameEnvironment, Candied.Core.Errors.DomainError>(rawDetect.Value)
-                : Result.Fail<GameEnvironment, Candied.Core.Errors.DomainError>(rawDetect.Error);
+            return SerializeDomainError(inspectRes.Error);
         }
 
-        if (detectResult.IsFailure)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = detectResult.Error.Message,
-                detail = detectResult.Error.Detail
-            }, JsonOptions);
-        }
+        var target = inspectRes.Value;
+        SetActiveTarget(target);
 
-        var gameEnv = detectResult.Value;
-        _activeGameDirectory = gameDirectory;
-        _activeGameDatabasePath = _storageLayout.GetDatabasePath(gameEnv.GameName);
+        var guide = _platformGuideProviders.FirstOrDefault(g =>
+            string.Equals(g.PlatformId, target.PlatformId, StringComparison.OrdinalIgnoreCase))?.GetGuide();
 
         string nextStep;
-        if (!gameEnv.BepInExInfo.IsInstalled)
+        if (target.Capabilities.Contains(PlatformCapability.EnvironmentSetup) && !target.ModLoader.IsInstalled)
         {
-            nextStep = "BepInEx is not installed. Call 'setup' to provision it automatically before proceeding.";
+            nextStep = "Mod loader is not installed. Call 'setup' to provision the runtime loader and Vision sensor.";
+        }
+        else if (target.Capabilities.Contains(PlatformCapability.CodeKnowledge) && target.CodeModules.Count > 0)
+        {
+            var primary = target.CodeModules.FirstOrDefault(m => m.Tier == CodeModuleTier.CoreLogic) ?? target.CodeModules[0];
+            nextStep = $"Call 'extract-code(moduleName=\"{primary.Name}\")' to extract and index symbols into SQLite.";
         }
         else
         {
-            var primaryAssembly = gameEnv.DiscoveredAssemblies
-                .FirstOrDefault(a => a.Tier == AssemblyTier.CoreGame)
-                ?? gameEnv.DiscoveredAssemblies.FirstOrDefault(a => a.Tier == AssemblyTier.GameModular);
-            var asmTarget = primaryAssembly?.Name ?? "Assembly-CSharp";
-            nextStep = $"BepInEx is installed. Call 'decompile' on primary game assembly '{asmTarget}' to inspect and index its classes.";
+            nextStep = "Call 'game-launch' to host the window in Candied Studio and inspect it via 'screenshot' and 'send-input'.";
         }
 
         return JsonSerializer.Serialize(new
         {
             success = true,
-            gameName = gameEnv.GameName,
-            engineType = gameEnv.EngineType.ToString(),
-            unityVersion = gameEnv.UnityVersion,
-            architecture = gameEnv.Architecture,
-            targetFramework = gameEnv.TargetFramework,
-            bepInEx = new
+            targetId = target.Id.Value,
+            name = target.Name,
+            targetPath = target.TargetPath,
+            runnerPath = target.RunnerPath,
+            platformId = target.PlatformId,
+            platformDisplayName = target.PlatformDisplayName,
+            architecture = target.Architecture,
+            engineVersion = target.EngineVersion,
+            runtimeFramework = target.RuntimeFramework,
+            modLoader = target.ModLoader,
+            capabilities = target.Capabilities.Select(c => c.ToString()),
+            modules = target.CodeModules.Select(m => new
             {
-                isInstalled = gameEnv.BepInExInfo.IsInstalled,
-                detectedVersion = gameEnv.BepInExInfo.DetectedVersion,
-                rootPath = gameEnv.BepInExInfo.BepInExRootPath
-            },
-            assemblies = gameEnv.DiscoveredAssemblies.Select(a => new
-            {
-                name = a.Name,
-                fullPath = a.FullPath,
-                sizeBytes = a.SizeBytes,
-                tier = a.Tier.ToString(),
-                reason = a.Reason,
-                isDecompiled = a.IsDecompiled
+                name = m.Name,
+                fullPath = m.FullPath,
+                sizeBytes = m.SizeBytes,
+                tier = m.Tier.ToString(),
+                reason = m.Reason,
+                isExtracted = m.IsExtracted
             }),
-            warnings = gameEnv.EnvironmentWarnings,
+            metadata = target.Metadata,
+            warnings = target.Warnings,
+            platformGuide = guide?.MarkdownContent,
             nextSuggestedStep = nextStep
         }, JsonOptions);
     }
 
-    public async Task<Result<string, Candied.Core.Errors.DomainError>> ResolveActiveGameDirectoryAsync(
-        string? explicitDirectory = null,
+    public async Task<string> SetupEnvironmentAsync(
+        string? targetPath = null,
+        string? runnerPath = null,
+        bool forceReinstall = false,
+        bool enableConsoleLogging = true,
         CancellationToken ct = default)
     {
-        if (!string.IsNullOrWhiteSpace(explicitDirectory))
+        var loc = await ResolveTargetLocationAsync(targetPath, runnerPath, ct).ConfigureAwait(false);
+        if (loc.IsFailure)
         {
-            _activeGameDirectory = explicitDirectory;
-            return Result.Ok<string, Candied.Core.Errors.DomainError>(explicitDirectory);
+            return SerializeDomainError(loc.Error);
         }
 
-        if (!string.IsNullOrWhiteSpace(_activeGameDirectory))
+        if (_setupTargetUseCase == null)
         {
-            return Result.Ok<string, Candied.Core.Errors.DomainError>(_activeGameDirectory);
+            return SerializeError("SetupTargetEnvironmentUseCase is not configured.");
         }
 
-        if (_gameRegistry != null)
+        var spec = new ProvisioningSpec(ForceReinstall: forceReinstall, EnableConsoleLogging: enableConsoleLogging);
+        var res = await _setupTargetUseCase.ExecuteAsync(loc.Value.TargetPath, loc.Value.RunnerPath, spec, _storageLayout, ct).ConfigureAwait(false);
+        if (res.IsFailure)
         {
-            try
-            {
-                var registered = await _gameRegistry.ListRegisteredGamesAsync(ct).ConfigureAwait(false);
-                if (registered.Count == 1)
-                {
-                    _activeGameDirectory = registered[0].GameRootPath;
-                    return Result.Ok<string, Candied.Core.Errors.DomainError>(_activeGameDirectory);
-                }
-
-                if (registered.Count > 1)
-                {
-                    var choices = string.Join(", ", registered.Select(g => $"{g.Name} ({g.GameRootPath})"));
-                    return Result.Fail<string, Candied.Core.Errors.DomainError>(new Candied.Core.Errors.DetectionError(
-                        "Sono registrati più giochi. Specifica 'gameDirectory' o seleziona uno tra: " + choices));
-                }
-            }
-            catch
-            {
-                // Ignore registry errors and fallback
-            }
+            return SerializeDomainError(res.Error);
         }
 
-        return Result.Fail<string, Candied.Core.Errors.DomainError>(new Candied.Core.Errors.DetectionError(
-            "Nessuna sessione di gioco attiva e nessun gioco registrato trovato. Specifica 'gameDirectory' o registra un gioco."));
-    }
-
-    public async Task<string> DecompileAssemblyAsync(
-        string? gameDirectory,
-        string assemblyName,
-        CancellationToken ct = default)
-    {
-        var dirRes = await ResolveActiveGameDirectoryAsync(gameDirectory, ct).ConfigureAwait(false);
-        if (dirRes.IsFailure)
+        var refreshed = await ResolveAndInspectAsync(loc.Value.TargetPath, loc.Value.RunnerPath, ct).ConfigureAwait(false);
+        if (refreshed.IsSuccess)
         {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = dirRes.Error.Message,
-                detail = dirRes.Error.Detail
-            }, JsonOptions);
+            SetActiveTarget(refreshed.Value);
         }
-        var targetGameDir = dirRes.Value;
-
-        if (string.IsNullOrWhiteSpace(assemblyName))
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = "Assembly name cannot be empty.",
-                detail = "Target assembly name required."
-            }, JsonOptions);
-        }
-
-        // Normalize assembly name by stripping directory path and .dll extension if provided
-        assemblyName = Path.GetFileNameWithoutExtension(assemblyName);
-
-        if (_decompileAssemblyUseCase == null)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = "DecompileAssemblyUseCase is not configured in this environment.",
-                detail = "Missing use case dependency."
-            }, JsonOptions);
-        }
-
-        var result = await _decompileAssemblyUseCase.ExecuteAsync(targetGameDir, assemblyName, _storageLayout, ct).ConfigureAwait(false);
-        if (result.IsFailure)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = result.Error.Message,
-                detail = result.Error.Detail
-            }, JsonOptions);
-        }
-
-        var gameName = await ResolveGameNameAsync(targetGameDir, ct).ConfigureAwait(false);
-        _activeGameDirectory = targetGameDir;
-        _activeGameDatabasePath = _storageLayout.GetDatabasePath(gameName);
 
         return JsonSerializer.Serialize(new
         {
             success = true,
-            assembly = result.Value.AssemblyName,
-            sourceDirectory = result.Value.OutputDirectory,
-            sourceFileCount = result.Value.SourceFileCount,
-            artifacts = new
-            {
-                decompiledDirectory = result.Value.OutputDirectory,
-                databasePath = _activeGameDatabasePath,
-                docsDirectory = _storageLayout.GetDocsDir(gameName),
-                overviewDoc = _storageLayout.GetOverviewDocPath(gameName),
-                namespacesDoc = _storageLayout.GetNamespacesDocPath(gameName),
-                symbolsIndexJson = _storageLayout.GetSymbolsIndexJsonPath(gameName)
-            },
-            nextSuggestedStep = $"Assembly '{result.Value.AssemblyName}' decompiled and indexed ({result.Value.SourceFileCount} source files). Call 'query' or 'type' to find target classes, methods, and fields to patch."
+            report = res.Value,
+            nextSuggestedStep = "Environment provisioned. Call 'extract-code' to inspect logic or 'game-launch' to start live perception."
         }, JsonOptions);
     }
 
-    public async Task<string> SearchGameSymbolsOnlyAsync(
+    public async Task<string> RollbackEnvironmentAsync(
+        string? targetPath = null,
+        string? runnerPath = null,
+        CancellationToken ct = default)
+    {
+        var loc = await ResolveTargetLocationAsync(targetPath, runnerPath, ct).ConfigureAwait(false);
+        if (loc.IsFailure)
+        {
+            return SerializeDomainError(loc.Error);
+        }
+
+        if (_rollbackTargetUseCase == null)
+        {
+            return SerializeError("RollbackTargetEnvironmentUseCase is not configured.");
+        }
+
+        var res = await _rollbackTargetUseCase.ExecuteAsync(loc.Value.TargetPath, loc.Value.RunnerPath, _storageLayout, ct).ConfigureAwait(false);
+        if (res.IsFailure)
+        {
+            return SerializeDomainError(res.Error);
+        }
+
+        return JsonSerializer.Serialize(new
+        {
+            success = true,
+            report = res.Value
+        }, JsonOptions);
+    }
+
+    public async Task<string> ExtractCodeAsync(
+        string moduleName,
+        string? targetPath = null,
+        string? runnerPath = null,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(moduleName))
+        {
+            return SerializeError("Module name cannot be empty.");
+        }
+
+        var loc = await ResolveTargetLocationAsync(targetPath, runnerPath, ct).ConfigureAwait(false);
+        if (loc.IsFailure)
+        {
+            return SerializeDomainError(loc.Error);
+        }
+
+        if (_extractCodeUseCase == null)
+        {
+            return SerializeError("ExtractCodeModuleUseCase is not configured.");
+        }
+
+        string cleanModule = Path.GetFileNameWithoutExtension(moduleName.Trim());
+        var res = await _extractCodeUseCase.ExecuteAsync(
+            loc.Value.TargetPath,
+            loc.Value.RunnerPath,
+            cleanModule,
+            _storageLayout,
+            null,
+            ct).ConfigureAwait(false);
+
+        if (res.IsFailure)
+        {
+            return SerializeDomainError(res.Error);
+        }
+
+        var inspected = await ResolveAndInspectAsync(loc.Value.TargetPath, loc.Value.RunnerPath, ct).ConfigureAwait(false);
+        string targetName = inspected.IsSuccess ? inspected.Value.Name : Path.GetFileNameWithoutExtension(loc.Value.TargetPath);
+        if (inspected.IsSuccess)
+        {
+            SetActiveTarget(inspected.Value);
+        }
+
+        string dbPath = _storageLayout.GetDatabasePath(targetName);
+        _activeDatabasePath = dbPath;
+
+        return JsonSerializer.Serialize(new
+        {
+            success = true,
+            moduleName = res.Value.ModuleName,
+            sourceDirectory = res.Value.OutputDirectory,
+            sourceFileCount = res.Value.SourceFileCount,
+            artifacts = new
+            {
+                extractedDirectory = res.Value.OutputDirectory,
+                databasePath = dbPath,
+                docsDirectory = _storageLayout.GetDocsDir(targetName),
+                overviewDoc = _storageLayout.GetOverviewDocPath(targetName),
+                namespacesDoc = _storageLayout.GetNamespacesDocPath(targetName),
+                symbolsIndexJson = _storageLayout.GetSymbolsIndexJsonPath(targetName)
+            },
+            nextSuggestedStep = $"Module '{res.Value.ModuleName}' extracted and indexed ({res.Value.SourceFileCount} files). Call 'query', 'search-code', or 'type' to inspect symbols."
+        }, JsonOptions);
+    }
+
+    public async Task<string> QuerySymbolsAsync(
         string searchTerm,
-        string? gameDirectory = null,
+        string? targetPath = null,
+        string? runnerPath = null,
         string? kind = null,
         string? namespacePrefix = null,
+        string? moduleFilter = null,
         int limit = 25,
         CancellationToken ct = default)
     {
-        var dirRes = await ResolveActiveGameDirectoryAsync(gameDirectory, ct).ConfigureAwait(false);
-        string? databasePath = null;
-        if (dirRes.IsSuccess)
-        {
-            var gameName = await ResolveGameNameAsync(dirRes.Value, ct).ConfigureAwait(false);
-            databasePath = _storageLayout.GetDatabasePath(gameName);
-        }
-        else
-        {
-            databasePath = _activeGameDatabasePath;
-        }
-
-        if (string.IsNullOrWhiteSpace(databasePath) || !File.Exists(databasePath))
+        string? dbPath = await ResolveDatabasePathAsync(targetPath, runnerPath, ct).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(dbPath) || !File.Exists(dbPath))
         {
             return JsonSerializer.Serialize(new
             {
                 success = false,
-                error = "Database dei simboli non trovato o non ancora indicizzato.",
-                suggestion = "Esegui prima il comando 'decompile(assemblyName)' sull'assembly di gioco primario (es. 'Assembly-CSharp') per popolare l'indice SQLite prima di cercare simboli."
+                error = "Symbol database not found or not yet indexed.",
+                suggestion = "Run 'extract-code(moduleName)' on the primary code module first to populate the SQLite index."
             }, JsonOptions);
         }
 
-        if (_searchGameSymbolsUseCase == null)
+        if (_searchSymbolsUseCase == null)
         {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = "SearchGameSymbolsUseCase is not configured in this environment.",
-                detail = "Missing use case dependency."
-            }, JsonOptions);
+            return SerializeError("SearchSymbolsUseCase is not configured.");
         }
 
-        var query = BuildSymbolQuery(searchTerm, kind, namespacePrefix, limit);
-        var result = await _searchGameSymbolsUseCase.ExecuteAsync(query, databasePath, ct).ConfigureAwait(false);
-
-        if (result.IsFailure)
+        var query = BuildSymbolQuery(searchTerm, kind, namespacePrefix, moduleFilter, limit);
+        var res = await _searchSymbolsUseCase.ExecuteAsync(query, dbPath, ct).ConfigureAwait(false);
+        if (res.IsFailure)
         {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = result.Error.Message,
-                detail = result.Error.Detail,
-                suggestion = "Esegui prima il comando 'decompile' sull'assembly di interesse per indicizzarlo."
-            }, JsonOptions);
+            return SerializeDomainError(res.Error);
         }
-
-        string? suggestion = result.Value.Count == 0
-            ? $"Nessun simbolo trovato per '{searchTerm}'. Se appartiene a un assembly non ancora decompilato, esegui prima 'decompile(assemblyName)' (usa 'inspect' per vedere gli assembly disponibili)."
-            : null;
 
         return JsonSerializer.Serialize(new
         {
             success = true,
-            count = result.Value.Count,
-            filter = new { kind = kind ?? "all", namespacePrefix, limit = query.Limit },
-            symbols = result.Value,
-            databasePath = databasePath,
-            suggestion = suggestion
+            count = res.Value.Count,
+            filter = new { kind = kind ?? "all", namespacePrefix, moduleFilter, limit = query.Limit },
+            symbols = res.Value,
+            databasePath = dbPath,
+            suggestion = res.Value.Count == 0
+                ? $"No symbols matched '{searchTerm}'. If the symbol belongs to another module, run 'extract-code(moduleName)'."
+                : null
         }, JsonOptions);
     }
 
-    public async Task<string> SearchGameCodeAsync(
+    public async Task<string> SearchCodeAsync(
         string pattern,
-        string? gameDirectory = null,
+        string? targetPath = null,
+        string? runnerPath = null,
         string? namespacePrefix = null,
-        string? assemblyName = null,
+        string? moduleFilter = null,
         int maxResults = 25,
         CancellationToken ct = default)
     {
-        var dirRes = await ResolveActiveGameDirectoryAsync(gameDirectory, ct).ConfigureAwait(false);
-        string? databasePath = null;
-        string? resolvedGameName = null;
-        if (dirRes.IsSuccess)
-        {
-            resolvedGameName = await ResolveGameNameAsync(dirRes.Value, ct).ConfigureAwait(false);
-            databasePath = _storageLayout.GetDatabasePath(resolvedGameName);
-        }
-        else
-        {
-            databasePath = _activeGameDatabasePath;
-        }
-
-        if (string.IsNullOrWhiteSpace(databasePath) || !File.Exists(databasePath))
+        string? dbPath = await ResolveDatabasePathAsync(targetPath, runnerPath, ct).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(dbPath) || !File.Exists(dbPath))
         {
             return JsonSerializer.Serialize(new
             {
                 success = false,
-                error = "Database dei simboli non trovato o non ancora indicizzato.",
-                suggestion = "Esegui prima il comando 'decompile(assemblyName)' sull'assembly di gioco primario (es. 'Assembly-CSharp') per popolare l'indice SQLite prima di cercare nel codice sorgente."
+                error = "Symbol database not found or not yet indexed.",
+                suggestion = "Run 'extract-code(moduleName)' on the primary code module first to populate the SQLite FTS5 index."
             }, JsonOptions);
         }
 
-        if (_searchGameCodeUseCase == null)
+        if (_searchCodeUseCase == null)
         {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = "SearchGameCodeUseCase is not configured in this environment.",
-                detail = "Missing use case dependency."
-            }, JsonOptions);
+            return SerializeError("SearchCodeUseCase is not configured.");
         }
 
         int clampedLimit = Math.Clamp(maxResults <= 0 ? 25 : maxResults, 1, 200);
-        int queryLimit = string.IsNullOrWhiteSpace(assemblyName) ? clampedLimit : Math.Min(clampedLimit * 4, 500);
         var query = new CodeSearchQuery(
             SearchTerm: pattern,
             NamespacePrefix: namespacePrefix,
-            Limit: queryLimit);
+            ModuleFilter: moduleFilter,
+            Limit: clampedLimit);
 
-        var result = await _searchGameCodeUseCase.ExecuteAsync(query, databasePath, ct).ConfigureAwait(false);
-        if (result.IsFailure)
+        var res = await _searchCodeUseCase.ExecuteAsync(query, dbPath, ct).ConfigureAwait(false);
+        if (res.IsFailure)
         {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = result.Error.Message,
-                detail = result.Error.Detail
-            }, JsonOptions);
+            return SerializeDomainError(res.Error);
         }
 
-        IEnumerable<CodeSearchMatch> filtered = result.Value;
-        if (!string.IsNullOrWhiteSpace(assemblyName))
+        string? targetName = _activeTarget?.Name;
+        var matches = res.Value.Select(m => new
         {
-            string trimmedAsm = assemblyName.Trim();
-            filtered = filtered.Where(m =>
-                !string.IsNullOrWhiteSpace(m.AssemblyName) &&
-                m.AssemblyName.Equals(trimmedAsm, StringComparison.OrdinalIgnoreCase));
-        }
-
-        var matches = filtered
-            .Take(clampedLimit)
-            .Select(m => new
-            {
-                fullTypeName = m.FullName,
-                @namespace = m.Namespace,
-                assemblyName = m.AssemblyName,
-                lineNumber = m.LineNumber,
-                snippet = m.Snippet,
-                sourceFilePath = ResolveDecompiledSourcePath(resolvedGameName, m.AssemblyName, m.RelativeSourcePath)
-            }).ToList();
+            fullTypeName = m.FullName,
+            @namespace = m.Namespace,
+            moduleName = m.ModuleName,
+            lineNumber = m.LineNumber,
+            snippet = m.Snippet,
+            sourceFilePath = ResolveExtractedSourcePath(targetName, m.ModuleName, m.RelativeSourcePath)
+        }).ToList();
 
         return JsonSerializer.Serialize(new
         {
             success = true,
-            pattern = pattern,
+            pattern,
             count = matches.Count,
-            matches = matches,
-            databasePath = databasePath,
-            suggestion = matches.Count == 0
-                ? $"Nessuna occorrenza di '{pattern}' trovata nel codice decompilato. Se il codice risiede in un altro assembly, esegui 'decompile(assemblyName)'."
-                : "Usa 'type(fullTypeName, memberFilter=...)' o leggi direttamente 'sourceFilePath' per ispezionare il contesto completo."
-        }, JsonOptions);
-    }
-
-    private static SymbolQuery BuildSymbolQuery(string searchTerm, string? kind, string? namespacePrefix, int limit)
-    {
-        int clampedLimit = Math.Clamp(limit <= 0 ? 25 : limit, 1, 200);
-        string normalized = (kind ?? "all").Trim().ToLowerInvariant();
-
-        return normalized switch
-        {
-            "types" or "type" => new SymbolQuery(searchTerm, SymbolKindFilter.TypeOnly, namespacePrefix, clampedLimit),
-            "members" or "member" => new SymbolQuery(searchTerm, SymbolKindFilter.MemberOnly, namespacePrefix, clampedLimit),
-            "class" => new SymbolQuery(searchTerm, SymbolKindFilter.TypeOnly, namespacePrefix, clampedLimit, ExactKind: SymbolKind.Class),
-            "struct" => new SymbolQuery(searchTerm, SymbolKindFilter.TypeOnly, namespacePrefix, clampedLimit, ExactKind: SymbolKind.Struct),
-            "interface" => new SymbolQuery(searchTerm, SymbolKindFilter.TypeOnly, namespacePrefix, clampedLimit, ExactKind: SymbolKind.Interface),
-            "enum" => new SymbolQuery(searchTerm, SymbolKindFilter.TypeOnly, namespacePrefix, clampedLimit, EnumOnly: true),
-            "method" => new SymbolQuery(searchTerm, SymbolKindFilter.MemberOnly, namespacePrefix, clampedLimit, ExactKind: SymbolKind.Method),
-            "field" => new SymbolQuery(searchTerm, SymbolKindFilter.MemberOnly, namespacePrefix, clampedLimit, ExactKind: SymbolKind.Field),
-            "property" => new SymbolQuery(searchTerm, SymbolKindFilter.MemberOnly, namespacePrefix, clampedLimit, ExactKind: SymbolKind.Property),
-            "event" => new SymbolQuery(searchTerm, SymbolKindFilter.MemberOnly, namespacePrefix, clampedLimit, ExactKind: SymbolKind.Event),
-            _ => new SymbolQuery(searchTerm, SymbolKindFilter.All, namespacePrefix, clampedLimit)
-        };
-    }
-
-    private string? ResolveDecompiledSourcePath(string? gameName, string? assemblyName, string? relativeSourcePath)
-    {
-        if (string.IsNullOrWhiteSpace(gameName) ||
-            string.IsNullOrWhiteSpace(assemblyName) ||
-            string.IsNullOrWhiteSpace(relativeSourcePath))
-        {
-            return null;
-        }
-
-        var normalizedRel = relativeSourcePath
-            .Replace('/', Path.DirectorySeparatorChar)
-            .Replace('\\', Path.DirectorySeparatorChar);
-        var fullPath = Path.Combine(_storageLayout.GetDecompiledDir(gameName), assemblyName, normalizedRel);
-        return File.Exists(fullPath) ? fullPath : fullPath;
-    }
-
-    public async Task<string> SaveResearchNotesAsync(
-        string notes,
-        string? gameDirectory = null,
-        CancellationToken ct = default)
-    {
-        var dirRes = await ResolveActiveGameDirectoryAsync(gameDirectory, ct).ConfigureAwait(false);
-        if (dirRes.IsFailure)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = dirRes.Error.Message,
-                detail = dirRes.Error.Detail
-            }, JsonOptions);
-        }
-        var targetGameDir = dirRes.Value;
-
-        var gameName = await ResolveGameNameAsync(targetGameDir, ct).ConfigureAwait(false);
-        if (_saveResearchNotesUseCase == null)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = "SaveResearchNotesUseCase is not configured in this environment.",
-                detail = "Missing use case dependency."
-            }, JsonOptions);
-        }
-
-        var result = await _saveResearchNotesUseCase.ExecuteAsync(gameName, notes, _storageLayout, ct).ConfigureAwait(false);
-        if (result.IsFailure)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = result.Error.Message,
-                detail = result.Error.Detail
-            }, JsonOptions);
-        }
-
-        var docsDir = _storageLayout.GetDocsDir(gameName);
-        var filePath = Path.Combine(docsDir, "RESEARCH.md");
-
-        return JsonSerializer.Serialize(new
-        {
-            success = true,
-            gameName = gameName,
-            savedPath = filePath
+            matches,
+            databasePath = dbPath
         }, JsonOptions);
     }
 
     public async Task<string> GetTypeDetailAsync(
         string fullTypeName,
-        string? gameDirectory = null,
+        string? targetPath = null,
+        string? runnerPath = null,
         bool signaturesOnly = false,
         string? memberFilter = null,
         CancellationToken ct = default)
     {
-        var dirRes = await ResolveActiveGameDirectoryAsync(gameDirectory, ct).ConfigureAwait(false);
-        string? databasePath = null;
-        string? resolvedGameName = null;
-        if (dirRes.IsSuccess)
-        {
-            resolvedGameName = await ResolveGameNameAsync(dirRes.Value, ct).ConfigureAwait(false);
-            databasePath = _storageLayout.GetDatabasePath(resolvedGameName);
-        }
-        else
-        {
-            databasePath = _activeGameDatabasePath;
-        }
-
-        if (string.IsNullOrWhiteSpace(databasePath))
+        string? dbPath = await ResolveDatabasePathAsync(targetPath, runnerPath, ct).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(dbPath) || !File.Exists(dbPath))
         {
             return JsonSerializer.Serialize(new
             {
                 success = false,
-                error = "Database dei simboli non trovato o non ancora indicizzato.",
-                suggestion = "Esegui prima il comando 'decompile(assemblyName)' sull'assembly contenente il tipo richiesto per indicizzarne i simboli prima di chiamare 'type'."
+                error = "Symbol database not found or not yet indexed.",
+                suggestion = "Run 'extract-code(moduleName)' first to index target types."
             }, JsonOptions);
         }
 
-        var result = await _getTypeDetailUseCase.ExecuteAsync(fullTypeName, databasePath, ct).ConfigureAwait(false);
+        if (_getTypeDetailUseCase == null)
+        {
+            return SerializeError("GetTypeDetailUseCase is not configured.");
+        }
 
-        if (result.IsFailure)
+        var res = await _getTypeDetailUseCase.ExecuteAsync(fullTypeName, dbPath, ct).ConfigureAwait(false);
+        if (res.IsFailure)
         {
             return JsonSerializer.Serialize(new
             {
                 success = false,
-                error = result.Error.Message,
-                detail = result.Error.Detail,
-                suggestion = $"Tipo '{fullTypeName}' non trovato nell'indice SQLite. Se appartiene a un assembly non ancora decompilato, esegui prima 'decompile(assemblyName)' specificando l'assembly corrispondente (usa 'inspect' per vedere gli assembly disponibili)."
+                error = res.Error.Message,
+                detail = res.Error.Detail,
+                suggestion = $"Type '{fullTypeName}' was not found in the index. Run 'extract-code(moduleName)' on the module declaring it."
             }, JsonOptions);
         }
 
-        var detail = result.Value;
-        string? sourceFilePath = ResolveDecompiledSourcePath(resolvedGameName, detail.AssemblyName, detail.RelativeSourcePath);
+        var detail = res.Value;
+        string? sourceFilePath = ResolveExtractedSourcePath(_activeTarget?.Name, detail.ModuleName, detail.RelativeSourcePath);
 
         IReadOnlyList<string> fieldSignatures = detail.FieldSignatures;
         IReadOnlyList<string> methodSignatures = detail.MethodSignatures;
@@ -598,17 +483,13 @@ public sealed class AgentWorkbenchService
 
         if (!string.IsNullOrWhiteSpace(memberFilter))
         {
-            string trimmedFilter = memberFilter.Trim();
-            fieldSignatures = fieldSignatures
-                .Where(f => f.Contains(trimmedFilter, StringComparison.OrdinalIgnoreCase))
-                .ToList();
-            methodSignatures = methodSignatures
-                .Where(m => m.Contains(trimmedFilter, StringComparison.OrdinalIgnoreCase))
-                .ToList();
+            string trimmed = memberFilter.Trim();
+            fieldSignatures = fieldSignatures.Where(f => f.Contains(trimmed, StringComparison.OrdinalIgnoreCase)).ToList();
+            methodSignatures = methodSignatures.Where(m => m.Contains(trimmed, StringComparison.OrdinalIgnoreCase)).ToList();
 
             if (!signaturesOnly && !string.IsNullOrEmpty(rawSourceCode))
             {
-                rawSourceCode = TypeMemberSourceExtractor.ExtractMatchingMembers(rawSourceCode, trimmedFilter);
+                rawSourceCode = TypeMemberSourceExtractor.ExtractMatchingMembers(rawSourceCode, trimmed);
             }
         }
 
@@ -626,83 +507,290 @@ public sealed class AgentWorkbenchService
                 @namespace = detail.Namespace,
                 baseType = detail.BaseType,
                 interfaces = detail.Interfaces,
-                fieldSignatures = fieldSignatures,
-                methodSignatures = methodSignatures,
-                rawSourceCode = rawSourceCode,
-                assemblyName = detail.AssemblyName,
+                fieldSignatures,
+                methodSignatures,
+                rawSourceCode,
+                moduleName = detail.ModuleName,
                 relativeSourcePath = detail.RelativeSourcePath
             },
-            sourceFilePath = sourceFilePath,
-            signaturesOnly = signaturesOnly,
-            memberFilter = memberFilter
+            sourceFilePath,
+            signaturesOnly,
+            memberFilter
         }, JsonOptions);
     }
 
-    public async Task<string> ScaffoldModAsync(
-        ModScaffoldSpec spec,
+    public async Task<string> SaveResearchNotesAsync(
+        string notes,
+        string? targetPath = null,
+        string? runnerPath = null,
         CancellationToken ct = default)
     {
-        if (spec != null && !string.IsNullOrWhiteSpace(spec.OutputDirectory) && !Path.IsPathRooted(spec.OutputDirectory))
+        var loc = await ResolveTargetLocationAsync(targetPath, runnerPath, ct).ConfigureAwait(false);
+        if (loc.IsFailure)
         {
-            spec = spec with { OutputDirectory = ResolveWorkspacePath(spec.OutputDirectory) };
+            return SerializeDomainError(loc.Error);
         }
 
-        var result = await _scaffoldModUseCase.ExecuteAsync(spec!, ct).ConfigureAwait(false);
-
-        if (result.IsFailure)
+        if (_saveResearchNotesUseCase == null)
         {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = result.Error.Message,
-                detail = result.Error.Detail
-            }, JsonOptions);
+            return SerializeError("SaveResearchNotesUseCase is not configured.");
+        }
+
+        var res = await _saveResearchNotesUseCase.ExecuteAsync(
+            loc.Value.TargetPath,
+            loc.Value.RunnerPath,
+            notes,
+            _storageLayout,
+            ct).ConfigureAwait(false);
+
+        if (res.IsFailure)
+        {
+            return SerializeDomainError(res.Error);
         }
 
         return JsonSerializer.Serialize(new
         {
             success = true,
-            manifest = result.Value,
-            nextSuggestedStep = $"Mod scaffolded at '{result.Value.ProjectFilePath}'. Write your Harmony patch class in Patches/, then call 'build' to compile."
+            savedPath = res.Value
         }, JsonOptions);
     }
 
-    public async Task<string> ScaffoldModByPathAsync(
-        string modName,
-        string pluginGuid,
-        string version,
-        string outputDirectory,
-        string gameDirectory,
-        IReadOnlyList<string>? publicizedAssemblies = null,
-        bool includeAssetPipeline = false,
+    public async Task<string> IndexAssetsAsync(
+        string? targetPath = null,
+        string? runnerPath = null,
+        bool forceReindex = false,
         CancellationToken ct = default)
     {
-        var detectResult = await _gameDetector.DetectGameAsync(gameDirectory, ct).ConfigureAwait(false);
-        if (detectResult.IsFailure)
+        var loc = await ResolveTargetLocationAsync(targetPath, runnerPath, ct).ConfigureAwait(false);
+        if (loc.IsFailure)
         {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = detectResult.Error.Message,
-                detail = detectResult.Error.Detail
-            }, JsonOptions);
+            return SerializeDomainError(loc.Error);
         }
 
-        var targetOutputDir = !string.IsNullOrWhiteSpace(outputDirectory)
+        if (_indexAssetsUseCase == null)
+        {
+            return SerializeError("IndexAssetsUseCase is not configured.");
+        }
+
+        var res = await _indexAssetsUseCase.ExecuteAsync(
+            loc.Value.TargetPath,
+            loc.Value.RunnerPath,
+            _storageLayout,
+            forceReindex,
+            ct).ConfigureAwait(false);
+
+        if (res.IsFailure)
+        {
+            return SerializeDomainError(res.Error);
+        }
+
+        return JsonSerializer.Serialize(new
+        {
+            success = true,
+            totalIndexed = res.Value,
+            message = $"Indexed {res.Value} target assets into SQLite."
+        }, JsonOptions);
+    }
+
+    public async Task<string> DiscoverAssetsAsync(
+        string? searchPattern = null,
+        string? assetType = null,
+        int maxResults = 50,
+        string? targetPath = null,
+        string? runnerPath = null,
+        string? containerName = null,
+        string? assetKey = null,
+        int offset = 0,
+        CancellationToken ct = default)
+    {
+        var loc = await ResolveTargetLocationAsync(targetPath, runnerPath, ct).ConfigureAwait(false);
+        if (loc.IsFailure)
+        {
+            return SerializeDomainError(loc.Error);
+        }
+
+        if (_discoverAssetsUseCase == null)
+        {
+            return SerializeError("DiscoverAssetsUseCase is not configured.");
+        }
+
+        int clampedMax = Math.Clamp(maxResults <= 0 ? 50 : maxResults, 1, 500);
+        int clampedOffset = Math.Max(0, offset);
+
+        long? parsedAssetKey = long.TryParse(assetKey, out long dak) ? dak : null;
+        var filter = new AssetDiscoveryFilter(
+            SearchPattern: searchPattern,
+            AssetType: assetType,
+            MaxResults: clampedMax,
+            ContainerName: containerName,
+            AssetKey: parsedAssetKey,
+            Offset: clampedOffset);
+
+        var res = await _discoverAssetsUseCase.ExecutePageAsync(
+            loc.Value.TargetPath,
+            loc.Value.RunnerPath,
+            filter,
+            _storageLayout,
+            ct).ConfigureAwait(false);
+
+        if (res.IsFailure)
+        {
+            return SerializeDomainError(res.Error);
+        }
+
+        var page = res.Value;
+        var containers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var a in page.Assets)
+        {
+            if (!string.IsNullOrEmpty(a.SourceContainer) && !containers.ContainsKey(a.SourceContainer))
+            {
+                containers[a.SourceContainer] = a.SourceContainerPath;
+            }
+        }
+
+        return JsonSerializer.Serialize(new
+        {
+            success = true,
+            totalMatches = page.TotalMatches,
+            returnedCount = page.Assets.Count,
+            offset = clampedOffset,
+            hasMore = clampedOffset + page.Assets.Count < page.TotalMatches,
+            containers,
+            assets = page.Assets.Select(a => new
+            {
+                name = a.Name,
+                assetType = a.AssetType,
+                container = a.SourceContainer,
+                assetKey = a.AssetKey,
+                width = a.Width,
+                height = a.Height,
+                byteSize = a.ByteSize,
+                extension = a.Extension
+            })
+        }, JsonOptions);
+    }
+
+    public async Task<string> ExtractAssetsAsync(
+        string? searchPattern = null,
+        string? assetType = null,
+        int maxResults = 50,
+        string? outputDirectory = null,
+        string? targetPath = null,
+        string? runnerPath = null,
+        string? containerName = null,
+        string? assetKey = null,
+        bool disambiguateCollisions = true,
+        CancellationToken ct = default)
+    {
+        var loc = await ResolveTargetLocationAsync(targetPath, runnerPath, ct).ConfigureAwait(false);
+        if (loc.IsFailure)
+        {
+            return SerializeDomainError(loc.Error);
+        }
+
+        if (_extractAssetsUseCase == null)
+        {
+            return SerializeError("ExtractAssetsUseCase is not configured.");
+        }
+
+        string? resolvedOut = !string.IsNullOrWhiteSpace(outputDirectory)
+            ? ResolveWorkspacePath(outputDirectory)
+            : null;
+
+        long? parsedAssetKey = long.TryParse(assetKey, out long eak) ? eak : null;
+        var filter = new AssetExtractionFilter(
+            SearchPattern: searchPattern,
+            AssetType: assetType,
+            MaxResults: Math.Clamp(maxResults <= 0 ? 50 : maxResults, 1, 500),
+            ContainerName: containerName,
+            AssetKey: parsedAssetKey,
+            DisambiguateCollisions: disambiguateCollisions);
+
+        var res = await _extractAssetsUseCase.ExecuteAsync(
+            loc.Value.TargetPath,
+            loc.Value.RunnerPath,
+            filter,
+            _storageLayout,
+            resolvedOut,
+            ct).ConfigureAwait(false);
+
+        if (res.IsFailure)
+        {
+            return SerializeDomainError(res.Error);
+        }
+
+        return JsonSerializer.Serialize(new
+        {
+            success = true,
+            totalExtracted = res.Value.Count,
+            extractedAssets = res.Value
+        }, JsonOptions);
+    }
+
+    public async Task<string> ScaffoldModAsync(
+        string modName,
+        string? modId = null,
+        string version = "1.0.0",
+        string? outputDirectory = null,
+        string? targetPath = null,
+        string? runnerPath = null,
+        bool includeAssetPipeline = false,
+        IReadOnlyDictionary<string, string>? platformOptions = null,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(modName))
+        {
+            return SerializeError("Mod name cannot be empty.");
+        }
+
+        var loc = await ResolveTargetLocationAsync(targetPath, runnerPath, ct).ConfigureAwait(false);
+        if (loc.IsFailure)
+        {
+            return SerializeDomainError(loc.Error);
+        }
+
+        var inspectRes = await ResolveAndInspectAsync(loc.Value.TargetPath, loc.Value.RunnerPath, ct).ConfigureAwait(false);
+        if (inspectRes.IsFailure)
+        {
+            return SerializeDomainError(inspectRes.Error);
+        }
+
+        if (_scaffoldModUseCase == null)
+        {
+            return SerializeError("ScaffoldModUseCase is not configured.");
+        }
+
+        SetActiveTarget(inspectRes.Value);
+
+        string resolvedModId = string.IsNullOrWhiteSpace(modId)
+            ? $"com.candied.{CandiedStorageLayout.Sanitize(modName).ToLowerInvariant()}"
+            : modId.Trim();
+
+        string resolvedOutDir = !string.IsNullOrWhiteSpace(outputDirectory)
             ? ResolveWorkspacePath(outputDirectory)
             : _storageLayout.GetModProjectDir(modName);
 
         var spec = new ModScaffoldSpec(
             ModName: modName,
-            PluginGuid: new PluginGuid(pluginGuid),
-            Version: version,
-            OutputDirectory: targetOutputDir,
-            TargetGame: detectResult.Value,
-            PublicizedAssemblyNames: publicizedAssemblies ?? Array.Empty<string>(),
-            IncludeAssetPipeline: includeAssetPipeline
-        );
+            ModId: new ModId(resolvedModId),
+            Version: string.IsNullOrWhiteSpace(version) ? "1.0.0" : version,
+            OutputDirectory: resolvedOutDir,
+            Target: inspectRes.Value,
+            IncludeAssetPipeline: includeAssetPipeline,
+            PlatformOptions: platformOptions);
 
-        return await ScaffoldModAsync(spec, ct).ConfigureAwait(false);
+        var res = await _scaffoldModUseCase.ExecuteAsync(spec, ct).ConfigureAwait(false);
+        if (res.IsFailure)
+        {
+            return SerializeDomainError(res.Error);
+        }
+
+        return JsonSerializer.Serialize(new
+        {
+            success = true,
+            manifest = res.Value,
+            nextSuggestedStep = $"Mod scaffolded at '{res.Value.ProjectFilePath}'. Implement your mod logic and call 'build'."
+        }, JsonOptions);
     }
 
     public async Task<string> BuildModAsync(
@@ -710,117 +798,39 @@ public sealed class AgentWorkbenchService
         string configuration = "Debug",
         CancellationToken ct = default)
     {
-        var resolvedProjectPath = projectFilePath;
-        if (!string.IsNullOrWhiteSpace(projectFilePath) && !Path.IsPathRooted(projectFilePath))
+        if (_buildModUseCase == null)
         {
-            var workspaceCandidate = ResolveWorkspacePath(projectFilePath);
-            resolvedProjectPath = File.Exists(workspaceCandidate) || !File.Exists(Path.GetFullPath(projectFilePath))
-                ? workspaceCandidate
-                : Path.GetFullPath(projectFilePath);
+            return SerializeError("BuildModUseCase is not configured.");
         }
 
-        var result = await _buildModUseCase.ExecuteAsync(resolvedProjectPath, configuration, ct).ConfigureAwait(false);
-
-        if (result.IsFailure)
+        string resolvedPath = ResolveProjectPath(projectFilePath);
+        var res = await _buildModUseCase.ExecuteAsync(resolvedPath, configuration, _activeTarget, ct).ConfigureAwait(false);
+        if (res.IsFailure)
         {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = result.Error.Message,
-                detail = result.Error.Detail
-            }, JsonOptions);
+            return SerializeDomainError(res.Error);
         }
 
-        var hints = result.Value.MissingReferenceHints;
+        var hints = res.Value.ResolutionHints;
         string nextStep;
-        if (result.Value.IsSuccess)
+        if (res.Value.IsSuccess)
         {
-            nextStep = "Build succeeded! Mod DLL is deployed to BepInEx/plugins. Launch the game and run 'logs' if you need to inspect runtime behavior.";
+            nextStep = "Build succeeded and artifacts deployed! Launch via 'game-launch' and check 'logs' or 'screenshot' to verify.";
         }
         else if (hints != null && hints.Count > 0)
         {
-            var first = hints[0];
-            nextStep = $"Build failed due to missing assembly reference(s): {string.Join(", ", hints.Select(h => h.AssemblyName))}. Call 'add-reference(projectFilePath, assemblyName=\"{first.AssemblyName}\")' and run 'build' again.";
+            nextStep = $"Build reported missing reference(s): {string.Join(", ", hints.Select(h => h.MissingItem))}. Suggested fix: {hints[0].SuggestedCommand}";
         }
         else
         {
-            nextStep = $"Build failed with {result.Value.Diagnostics.Count} diagnostics. Inspect the errors, fix the C# code in the mod project, and call 'build' again.";
+            nextStep = $"Build failed with {res.Value.Diagnostics.Count} diagnostics. Fix the errors and run 'build' again.";
         }
 
         return JsonSerializer.Serialize(new
         {
             success = true,
-            report = result.Value,
-            missingReferenceHints = hints,
+            report = res.Value,
+            resolutionHints = hints,
             nextSuggestedStep = nextStep
-        }, JsonOptions);
-    }
-
-    public async Task<string> AddProjectReferenceAsync(
-        string projectFilePath,
-        string assemblyName,
-        bool publicize = false,
-        string? gameDirectory = null,
-        CancellationToken ct = default)
-    {
-        if (_addProjectReferenceUseCase == null)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = "AddProjectReferenceUseCase is not configured in this environment.",
-                detail = "Missing use case dependency."
-            }, JsonOptions);
-        }
-
-        var resolvedProjectPath = projectFilePath;
-        if (!string.IsNullOrWhiteSpace(projectFilePath) && !Path.IsPathRooted(projectFilePath))
-        {
-            var workspaceCandidate = ResolveWorkspacePath(projectFilePath);
-            resolvedProjectPath = File.Exists(workspaceCandidate) || !File.Exists(Path.GetFullPath(projectFilePath))
-                ? workspaceCandidate
-                : Path.GetFullPath(projectFilePath);
-        }
-
-        string? resolvedGameDir = gameDirectory;
-        if (string.IsNullOrWhiteSpace(resolvedGameDir))
-        {
-            var dirRes = await ResolveActiveGameDirectoryAsync(null, ct).ConfigureAwait(false);
-            if (dirRes.IsSuccess)
-            {
-                resolvedGameDir = dirRes.Value;
-            }
-        }
-
-        var result = await _addProjectReferenceUseCase.ExecuteAsync(
-            resolvedProjectPath,
-            assemblyName,
-            publicize,
-            resolvedGameDir,
-            ct).ConfigureAwait(false);
-
-        if (result.IsFailure)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = result.Error.Message,
-                detail = result.Error.Detail
-            }, JsonOptions);
-        }
-
-        var val = result.Value;
-        return JsonSerializer.Serialize(new
-        {
-            success = true,
-            projectFilePath = val.ProjectFilePath,
-            assemblyName = val.AssemblyName,
-            dllPath = val.DllPath,
-            publicized = val.Publicized,
-            alreadyReferenced = val.AlreadyReferenced,
-            nextSuggestedStep = val.AlreadyReferenced
-                ? $"Assembly '{val.AssemblyName}' is already referenced in '{val.ProjectFilePath}'. Run 'build' to verify."
-                : $"Added reference '{val.AssemblyName}' ({val.DllPath}). Run 'build' to recompile."
         }, JsonOptions);
     }
 
@@ -828,1063 +838,862 @@ public sealed class AgentWorkbenchService
         string? logFilePath = null,
         int maxLines = 200,
         LogLevel? minLevel = null,
-        string? gameDirectory = null,
+        string? targetPath = null,
+        string? runnerPath = null,
         CancellationToken ct = default)
     {
-        string targetLogPath = logFilePath ?? string.Empty;
-
-        if (string.IsNullOrWhiteSpace(targetLogPath))
+        if (_readLogsUseCase == null)
         {
-            var resolveRes = await ResolveActiveGameDirectoryAsync(gameDirectory, ct).ConfigureAwait(false);
-            if (resolveRes.IsSuccess)
+            return SerializeError("ReadRuntimeLogsUseCase is not configured.");
+        }
+
+        TargetDescriptor? target = _activeTarget;
+        if (!string.IsNullOrWhiteSpace(targetPath))
+        {
+            var inspectRes = await ResolveAndInspectAsync(targetPath, runnerPath, ct).ConfigureAwait(false);
+            if (inspectRes.IsSuccess)
             {
-                var bepLog = Path.Combine(resolveRes.Value, "BepInEx", "LogOutput.log");
-                if (File.Exists(bepLog))
-                {
-                    targetLogPath = bepLog;
-                }
-                else
-                {
-                    return JsonSerializer.Serialize(new
-                    {
-                        success = false,
-                        error = $"File di log non trovato in: {bepLog}",
-                        detail = "La cartella BepInEx/LogOutput.log non esiste ancora. Avvia il gioco almeno una volta per generare i log, oppure specifica 'logFilePath'."
-                    }, JsonOptions);
-                }
+                target = inspectRes.Value;
+                SetActiveTarget(target);
             }
-            else
+        }
+
+        string? effectiveLogPath = logFilePath;
+        if (string.IsNullOrWhiteSpace(effectiveLogPath) && target != null && _platformRegistry != null)
+        {
+            var platform = _platformRegistry.GetPlatformById(target.PlatformId);
+            effectiveLogPath = platform?.RuntimeLogs?.ResolveDefaultLogPath(target);
+        }
+
+        if (string.IsNullOrWhiteSpace(effectiveLogPath))
+        {
+            return SerializeError("Log file path was not provided and could not be resolved from active target.");
+        }
+
+        var res = await _readLogsUseCase.ExecuteAsync(effectiveLogPath, maxLines, target, ct).ConfigureAwait(false);
+        if (res.IsFailure)
+        {
+            return SerializeDomainError(res.Error);
+        }
+
+        IEnumerable<LogEntry> entries = res.Value;
+        if (minLevel.HasValue)
+        {
+            entries = entries.Where(e => e.Level >= minLevel.Value);
+        }
+
+        var list = entries.ToList();
+        return JsonSerializer.Serialize(new
+        {
+            success = true,
+            logFilePath = effectiveLogPath,
+            count = list.Count,
+            entries = list
+        }, JsonOptions);
+    }
+
+    public async Task<string> ExecutePlatformToolAsync(
+        string toolName,
+        IReadOnlyDictionary<string, string?> arguments,
+        CancellationToken ct = default)
+    {
+        var provider = _platformToolProviders.FirstOrDefault(p =>
+            p.GetTools().Any(t => string.Equals(t.Name, toolName, StringComparison.OrdinalIgnoreCase)));
+
+        if (provider == null)
+        {
+            return SerializeError($"Unknown platform tool: '{toolName}'.");
+        }
+
+        var normalizedArgs = new Dictionary<string, string?>(arguments, StringComparer.OrdinalIgnoreCase);
+        if (normalizedArgs.TryGetValue("projectFilePath", out var pfp) && !string.IsNullOrWhiteSpace(pfp))
+        {
+            normalizedArgs["projectFilePath"] = ResolveProjectPath(pfp);
+        }
+
+        var result = await provider.ExecuteToolAsync(toolName, normalizedArgs, _activeTarget, _storageLayout, ct).ConfigureAwait(false);
+        return result.PayloadJson;
+    }
+
+    public async Task<string> GetTargetStatusAsync(
+        string? targetPath = null,
+        string? runnerPath = null,
+        CancellationToken ct = default)
+    {
+        StudioStatusInfo? studioStatus = null;
+        if (_studioClient != null)
+        {
+            var stRes = await _studioClient.GetStatusAsync(ct).ConfigureAwait(false);
+            if (stRes.IsSuccess)
+            {
+                studioStatus = stRes.Value;
+            }
+        }
+
+        TargetProcessInfo? standaloneProc = null;
+        if (_manageProcessUseCase != null && (!string.IsNullOrWhiteSpace(targetPath) || !string.IsNullOrWhiteSpace(_activeTargetPath)))
+        {
+            string resolvedPath = !string.IsNullOrWhiteSpace(targetPath) ? targetPath : _activeTargetPath!;
+            var procRes = await _manageProcessUseCase.GetStatusAsync(resolvedPath, runnerPath ?? _activeRunnerPath, _storageLayout, ct).ConfigureAwait(false);
+            if (procRes.IsSuccess)
+            {
+                standaloneProc = procRes.Value;
+            }
+        }
+
+        bool isRunning = (studioStatus?.IsRunning ?? false) || standaloneProc != null;
+        var visionTier = studioStatus?.ActiveVisionTier ?? VisionTier.None;
+
+        return JsonSerializer.Serialize(new
+        {
+            success = true,
+            isRunning,
+            visionTier = visionTier.ToString(),
+            studio = studioStatus,
+            standaloneProcess = standaloneProc
+        }, JsonOptions);
+    }
+
+    public async Task<string> LaunchInStudioAsync(
+        string? targetPath = null,
+        string? runnerPath = null,
+        string? extraArguments = null,
+        string? waitForLog = null,
+        int stabilityTimeoutSeconds = 30,
+        CancellationToken ct = default)
+    {
+        if (_studioClient == null)
+        {
+            return SerializeError("Studio host client is not configured.");
+        }
+
+        var loc = await ResolveTargetLocationAsync(targetPath, runnerPath, ct).ConfigureAwait(false);
+        if (loc.IsFailure)
+        {
+            return SerializeDomainError(loc.Error);
+        }
+
+        var specRes = WindowLaunchProfileBuilder.Build(loc.Value.TargetPath, loc.Value.RunnerPath, extraArguments);
+        if (specRes.IsFailure)
+        {
+            return JsonSerializer.Serialize(new
+            {
+                success = false,
+                error = specRes.Error,
+                suggestion = "Provide a valid PC game executable/directory in 'targetPath', or a ROM path with 'runnerPath'."
+            }, JsonOptions);
+        }
+
+        var launchSpec = specRes.Value;
+        _activeTargetPath = launchSpec.TargetPath;
+        _activeRunnerPath = launchSpec.RunnerPath;
+
+        if (_platformRegistry != null)
+        {
+            var inspected = await _platformRegistry.InspectTargetAsync(launchSpec.TargetPath, launchSpec.RunnerPath, _storageLayout, ct).ConfigureAwait(false);
+            if (inspected.IsSuccess)
+            {
+                SetActiveTarget(inspected.Value);
+            }
+        }
+
+        var ensureRes = await _studioClient.EnsureStudioRunningAsync(ct).ConfigureAwait(false);
+        if (ensureRes.IsFailure)
+        {
+            return JsonSerializer.Serialize(new
+            {
+                success = false,
+                error = $"Failed to launch Candied Studio: {ensureRes.Error}"
+            }, JsonOptions);
+        }
+
+        StudioStatusInfo activeStatus;
+        var currentStatus = await _studioClient.GetStatusAsync(ct).ConfigureAwait(false);
+        if (currentStatus.IsSuccess &&
+            currentStatus.Value.IsRunning &&
+            (string.Equals(currentStatus.Value.ActiveTargetPath, launchSpec.TargetPath, StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(currentStatus.Value.ActiveTargetName, launchSpec.TargetName, StringComparison.OrdinalIgnoreCase)))
+        {
+            activeStatus = currentStatus.Value;
+        }
+        else
+        {
+            var launchRes = await _studioClient.LaunchTargetAsync(launchSpec, ct).ConfigureAwait(false);
+            if (launchRes.IsFailure)
             {
                 return JsonSerializer.Serialize(new
                 {
                     success = false,
-                    error = resolveRes.Error.Message,
-                    detail = resolveRes.Error.Detail
+                    error = $"Studio target launch failed: {launchRes.Error}"
+                }, JsonOptions);
+            }
+
+            activeStatus = launchRes.Value;
+        }
+
+        if (_recentTargetsStore != null)
+        {
+            await _recentTargetsStore.RecordRecentAsync(new RecentTargetEntry(
+                launchSpec.TargetName,
+                launchSpec.TargetPath,
+                launchSpec.RunnerPath,
+                launchSpec.ExtraArguments,
+                DateTimeOffset.UtcNow), ct).ConfigureAwait(false);
+        }
+
+        var win = activeStatus.Window;
+        if (win != null && (win.Handle == 0 || !win.IsVisible || !win.IsWithinMonitor))
+        {
+            string logPath = VisionConfigPaths.GetStudioLogPath();
+            return JsonSerializer.Serialize(new
+            {
+                success = false,
+                error = "Candied Studio is running, but the main window is hidden, invalid, or outside monitor bounds.",
+                logPath,
+                suggestion = $"Inspect Studio diagnostics in '{logPath}'."
+            }, JsonOptions);
+        }
+
+        // Stability loop supporting BOTH Tier 2 (SensorBridge) and Tier 1 (BaseWindow)
+        const double stabilityDiffThreshold = 0.25;
+        const int requiredStableWindows = 2;
+        int timeoutMs = Math.Clamp(stabilityTimeoutSeconds, 2, 120) * 1000;
+        var sw = Stopwatch.StartNew();
+        int consecutiveStable = 0;
+        string lastStatus = "Waiting for initial rendered frames...";
+        string activeSceneName = "Unknown";
+        int activeNodeCount = 0;
+        VisionTier observedTier = activeStatus.ActiveVisionTier;
+        int frameW = activeStatus.TargetWidth;
+        int frameH = activeStatus.TargetHeight;
+
+        while (sw.ElapsedMilliseconds < timeoutMs && !ct.IsCancellationRequested)
+        {
+            var frame1Res = await CaptureFrameInternalAsync(null, null, ct).ConfigureAwait(false);
+            if (frame1Res.IsFailure || frame1Res.Value.IsUniform)
+            {
+                consecutiveStable = 0;
+                lastStatus = frame1Res.IsFailure
+                    ? $"Initial frame capture pending: {frame1Res.Error.Message}"
+                    : "Uniform loading screen detected.";
+                await Task.Delay(500, ct).ConfigureAwait(false);
+                continue;
+            }
+
+            await Task.Delay(600, ct).ConfigureAwait(false);
+
+            var frame2Res = await CaptureFrameInternalAsync(null, null, ct).ConfigureAwait(false);
+            if (frame2Res.IsFailure || frame2Res.Value.IsUniform)
+            {
+                consecutiveStable = 0;
+                continue;
+            }
+
+            observedTier = frame2Res.Value.SourceTier;
+            frameW = frame2Res.Value.Width > 0 ? frame2Res.Value.Width : frameW;
+            frameH = frame2Res.Value.Height > 0 ? frame2Res.Value.Height : frameH;
+
+            bool sceneStable = true;
+            var sensorConn = await TryResolveSensorConnectionAsync(null, null, ct).ConfigureAwait(false);
+            if (sensorConn.BaseUrl != null && _visionSensorClient != null)
+            {
+                var sceneRes = await _visionSensorClient.GetSceneInfoAsync(sensorConn.BaseUrl, sensorConn.Token, ct).ConfigureAwait(false);
+                if (sceneRes.IsSuccess)
+                {
+                    observedTier = VisionTier.SensorBridge;
+                    activeSceneName = sceneRes.Value.ActiveSceneName;
+                    activeNodeCount = sceneRes.Value.ActiveNodeCount;
+                }
+            }
+
+            bool logMarkerFound = true;
+            if (!string.IsNullOrWhiteSpace(waitForLog) && !string.IsNullOrWhiteSpace(launchSpec.LogFilePath))
+            {
+                logMarkerFound = ContainsLogMarker(launchSpec.LogFilePath, waitForLog.Trim());
+                if (!logMarkerFound)
+                {
+                    lastStatus = $"Waiting for log marker '{waitForLog}'...";
+                }
+            }
+
+            double diff = PurePngDecoder.CalculateDiffPercentage(frame1Res.Value.PngBytes, frame2Res.Value.PngBytes);
+            if (diff < stabilityDiffThreshold && sceneStable && logMarkerFound)
+            {
+                consecutiveStable++;
+                if (consecutiveStable >= requiredStableWindows)
+                {
+                    var refreshedStatus = await _studioClient.GetStatusAsync(ct).ConfigureAwait(false);
+                    var finalWin = refreshedStatus.IsSuccess ? refreshedStatus.Value.Window : win;
+
+                    return JsonSerializer.Serialize(new
+                    {
+                        success = true,
+                        status = "Running",
+                        targetName = launchSpec.TargetName,
+                        targetPath = launchSpec.TargetPath,
+                        runnerPath = launchSpec.RunnerPath,
+                        visionTier = observedTier.ToString(),
+                        activeSceneName,
+                        activeNodeCount,
+                        resolution = new { width = frameW, height = frameH },
+                        window = finalWin != null ? new
+                        {
+                            mainWindowHandle = finalWin.Handle,
+                            isWindowVisible = finalWin.IsVisible,
+                            windowState = finalWin.WindowState,
+                            isWithinMonitor = finalWin.IsWithinMonitor,
+                            isResponding = finalWin.IsResponding
+                        } : null,
+                        waitOutcome = $"Stable ({consecutiveStable} consecutive windows, diff: {diff:F2}% < {stabilityDiffThreshold:F2}%)",
+                        elapsedSeconds = sw.Elapsed.TotalSeconds,
+                        nextSuggestedStep = "Use 'screenshot' to inspect the window and 'send-input' or 'trigger-action' to interact."
+                    }, JsonOptions);
+                }
+
+                continue;
+            }
+
+            consecutiveStable = 0;
+            lastStatus = $"Frame delta {diff:F2}% >= {stabilityDiffThreshold:F2}%.";
+            await Task.Delay(400, ct).ConfigureAwait(false);
+        }
+
+        // Even if dynamic animation kept diff >= 0.25%, if window is running and non-uniform, return running status with note!
+        return JsonSerializer.Serialize(new
+        {
+            success = true,
+            status = "Running",
+            targetName = launchSpec.TargetName,
+            targetPath = launchSpec.TargetPath,
+            runnerPath = launchSpec.RunnerPath,
+            visionTier = observedTier.ToString(),
+            activeSceneName,
+            activeNodeCount,
+            resolution = new { width = frameW, height = frameH },
+            waitOutcome = $"Target running (dynamic animation or transition active after {sw.Elapsed.TotalSeconds:F1}s: {lastStatus})",
+            nextSuggestedStep = "Capture a frame with 'screenshot' to inspect the current visual state."
+        }, JsonOptions);
+    }
+
+    public async Task<string> CloseStudioTargetAsync(CancellationToken ct = default)
+    {
+        if (_studioClient == null)
+        {
+            return SerializeError("Studio host client is not configured.");
+        }
+
+        var res = await _studioClient.CloseTargetAsync(ct).ConfigureAwait(false);
+        if (res.IsFailure)
+        {
+            return SerializeError(res.Error);
+        }
+
+        return JsonSerializer.Serialize(new
+        {
+            success = true,
+            status = "Closed",
+            message = "Target window closed in Candied Studio."
+        }, JsonOptions);
+    }
+
+    public async Task<string> ListRecentTargetsAsync(CancellationToken ct = default)
+    {
+        if (_recentTargetsStore == null)
+        {
+            return JsonSerializer.Serialize(new { success = true, count = 0, targets = Array.Empty<object>() }, JsonOptions);
+        }
+
+        var items = await _recentTargetsStore.ListRecentAsync(ct).ConfigureAwait(false);
+        return JsonSerializer.Serialize(new
+        {
+            success = true,
+            count = items.Count,
+            targets = items
+        }, JsonOptions);
+    }
+
+    public async Task<string> GetCapabilitiesAsync(
+        int? port = null,
+        string? token = null,
+        CancellationToken ct = default)
+    {
+        var sensorConn = await TryResolveSensorConnectionAsync(port, token, ct).ConfigureAwait(false);
+        if (sensorConn.BaseUrl != null && _visionSensorClient != null)
+        {
+            var capRes = await _visionSensorClient.GetCapabilitiesAsync(sensorConn.BaseUrl, sensorConn.Token, ct).ConfigureAwait(false);
+            if (capRes.IsSuccess)
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    success = true,
+                    visionTier = VisionTier.SensorBridge.ToString(),
+                    capabilities = capRes.Value.Capabilities,
+                    screenshotMethod = capRes.Value.ScreenshotMethod,
+                    screenshotLimitations = capRes.Value.ScreenshotLimitations,
+                    pointerMethod = capRes.Value.PointerMethod,
+                    metadata = capRes.Value.Metadata
                 }, JsonOptions);
             }
         }
 
-        var result = await _readLogsUseCase.ExecuteAsync(targetLogPath, maxLines, minLevel, ct).ConfigureAwait(false);
-
-        if (result.IsFailure)
+        if (_studioClient != null)
         {
-            return JsonSerializer.Serialize(new
+            var statusRes = await _studioClient.GetStatusAsync(ct).ConfigureAwait(false);
+            if (statusRes.IsSuccess && statusRes.Value.IsRunning)
             {
-                success = false,
-                error = result.Error.Message,
-                detail = result.Error.Detail
-            }, JsonOptions);
-        }
-
-        return JsonSerializer.Serialize(new
-        {
-            success = true,
-            count = result.Value.Count,
-            entries = result.Value
-        }, JsonOptions);
-    }
-
-    public async Task<string> SetupGameEnvironmentAsync(
-        string? gameDirectory,
-        bool forceReinstall = false,
-        bool enableConsoleLogging = true,
-        CancellationToken ct = default)
-    {
-        var targetGameDir = !string.IsNullOrWhiteSpace(gameDirectory)
-            ? gameDirectory
-            : _activeGameDirectory;
-
-        if (string.IsNullOrWhiteSpace(targetGameDir))
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = "Game directory was not specified and no active game session is cached. Call inspect first or provide gameDirectory.",
-                detail = "Target game directory path required."
-            }, JsonOptions);
-        }
-
-        if (_setupGameEnvironmentUseCase == null)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = "SetupGameEnvironmentUseCase is not configured in this environment.",
-                detail = "Missing use case dependency."
-            }, JsonOptions);
-        }
-
-        var spec = new ProvisioningSpec(
-            TargetVersion: null,
-            ForceReinstall: forceReinstall,
-            EnableConsoleLogging: enableConsoleLogging
-        );
-
-        var result = await _setupGameEnvironmentUseCase.ExecuteAsync(targetGameDir, spec, _storageLayout, ct).ConfigureAwait(false);
-        if (result.IsFailure)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = result.Error.Message,
-                detail = result.Error.Detail
-            }, JsonOptions);
-        }
-
-        _activeGameDirectory = targetGameDir;
-
-        return JsonSerializer.Serialize(new
-        {
-            success = true,
-            modLoader = result.Value.ModLoaderName,
-            version = result.Value.Version,
-            architecture = result.Value.Architecture,
-            filesInstalled = result.Value.FilesInstalledCount,
-            consoleLoggingConfigured = result.Value.ConsoleLoggingConfigured,
-            manifestPath = result.Value.ManifestPath,
-            nextSuggestedStep = "BepInEx provisioned successfully. Call 'decompile' on the primary game assembly."
-        }, JsonOptions);
-    }
-
-    public async Task<string> RollbackGameEnvironmentAsync(
-        string? gameDirectory,
-        CancellationToken ct = default)
-    {
-        var targetGameDir = !string.IsNullOrWhiteSpace(gameDirectory)
-            ? gameDirectory
-            : _activeGameDirectory;
-
-        if (string.IsNullOrWhiteSpace(targetGameDir))
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = "Game directory was not specified and no active game session is cached. Call inspect first or provide gameDirectory.",
-                detail = "Target game directory path required."
-            }, JsonOptions);
-        }
-
-        if (_rollbackGameEnvironmentUseCase == null)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = "RollbackGameEnvironmentUseCase is not configured in this environment.",
-                detail = "Missing use case dependency."
-            }, JsonOptions);
-        }
-
-        var result = await _rollbackGameEnvironmentUseCase.ExecuteAsync(targetGameDir, _storageLayout, ct).ConfigureAwait(false);
-        if (result.IsFailure)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = result.Error.Message,
-                detail = result.Error.Detail
-            }, JsonOptions);
-        }
-
-        return JsonSerializer.Serialize(new
-        {
-            success = true,
-            filesRemoved = result.Value.FilesRemovedCount,
-            removedFiles = result.Value.RemovedFiles
-        }, JsonOptions);
-    }
-
-    public async Task<string> GetGameProcessStatusAsync(
-        string? gameDirectory = null,
-        CancellationToken ct = default)
-    {
-        var targetGameDir = !string.IsNullOrWhiteSpace(gameDirectory)
-            ? gameDirectory
-            : _activeGameDirectory;
-
-        if (string.IsNullOrWhiteSpace(targetGameDir))
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = "Game directory was not specified and no active game session is cached. Call inspect first or provide gameDirectory.",
-                detail = "Target game directory path required."
-            }, JsonOptions);
-        }
-
-        if (_getGameProcessStatusUseCase == null)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = "GetGameProcessStatusUseCase is not configured in this environment.",
-                detail = "Missing use case dependency."
-            }, JsonOptions);
-        }
-
-        var detectResult = await _gameDetector.DetectGameAsync(targetGameDir, ct).ConfigureAwait(false);
-        if (detectResult.IsFailure)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = detectResult.Error.Message,
-                detail = detectResult.Error.Detail
-            }, JsonOptions);
-        }
-
-        var game = detectResult.Value;
-        var result = await _getGameProcessStatusUseCase.ExecuteAsync(game, ct).ConfigureAwait(false);
-        if (result.IsFailure)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = result.Error.Message,
-                detail = result.Error.Detail
-            }, JsonOptions);
-        }
-
-        _activeGameDirectory = targetGameDir;
-        var process = result.Value;
-        var isRunning = process != null;
-
-        var nextStep = isRunning
-            ? "Game is running."
-            : "Game is not running. Call 'launch' to start it in windowed mode.";
-
-        return JsonSerializer.Serialize(new
-        {
-            success = true,
-            isRunning = isRunning,
-            gameName = game.GameName,
-            process = process != null ? new
-            {
-                processId = process.Id.Value,
-                processName = process.ProcessName,
-                mainWindowTitle = process.MainWindowTitle,
-                isResponding = process.IsResponding
-            } : null,
-            nextSuggestedStep = nextStep
-        }, JsonOptions);
-    }
-
-    public async Task<string> LaunchGameAsync(
-        string? gameDirectory = null,
-        bool windowed = true,
-        int width = 1280,
-        int height = 720,
-        CancellationToken ct = default)
-    {
-        var targetGameDir = !string.IsNullOrWhiteSpace(gameDirectory)
-            ? gameDirectory
-            : _activeGameDirectory;
-
-        if (string.IsNullOrWhiteSpace(targetGameDir))
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = "Game directory was not specified and no active game session is cached. Call inspect first or provide gameDirectory.",
-                detail = "Target game directory path required."
-            }, JsonOptions);
-        }
-
-        if (_launchGameUseCase == null)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = "LaunchGameUseCase is not configured in this environment.",
-                detail = "Missing use case dependency."
-            }, JsonOptions);
-        }
-
-        var detectResult = await _gameDetector.DetectGameAsync(targetGameDir, ct).ConfigureAwait(false);
-        if (detectResult.IsFailure)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = detectResult.Error.Message,
-                detail = detectResult.Error.Detail
-            }, JsonOptions);
-        }
-
-        var game = detectResult.Value;
-
-        var launchOptions = new GameLaunchOptions(
-            Windowed: windowed,
-            WindowWidth: width,
-            WindowHeight: height
-        );
-
-        var result = await _launchGameUseCase.ExecuteAsync(game, launchOptions, ct).ConfigureAwait(false);
-        if (result.IsFailure)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = result.Error.Message,
-                detail = result.Error.Detail
-            }, JsonOptions);
-        }
-
-        _activeGameDirectory = targetGameDir;
-        var process = result.Value;
-
-        return JsonSerializer.Serialize(new
-        {
-            success = true,
-            gameName = game.GameName,
-            processId = process.Id.Value,
-            processName = process.ProcessName,
-            mainWindowTitle = process.MainWindowTitle,
-            windowed = windowed,
-            resolution = $"{width}x{height}",
-            nextSuggestedStep = "Game is running in windowed mode."
-        }, JsonOptions);
-    }
-
-    public async Task<string> StopGameAsync(
-        string? gameDirectory = null,
-        CancellationToken ct = default)
-    {
-        var targetGameDir = !string.IsNullOrWhiteSpace(gameDirectory)
-            ? gameDirectory
-            : _activeGameDirectory;
-
-        if (string.IsNullOrWhiteSpace(targetGameDir))
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = "Game directory was not specified and no active game session is cached. Call inspect first or provide gameDirectory.",
-                detail = "Target game directory path required."
-            }, JsonOptions);
-        }
-
-        if (_stopGameUseCase == null)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = "StopGameUseCase is not configured in this environment.",
-                detail = "Missing use case dependency."
-            }, JsonOptions);
-        }
-
-        var detectResult = await _gameDetector.DetectGameAsync(targetGameDir, ct).ConfigureAwait(false);
-        if (detectResult.IsFailure)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = detectResult.Error.Message,
-                detail = detectResult.Error.Detail
-            }, JsonOptions);
-        }
-
-        var game = detectResult.Value;
-        var result = await _stopGameUseCase.ExecuteAsync(game, ct).ConfigureAwait(false);
-        if (result.IsFailure)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = result.Error.Message,
-                detail = result.Error.Detail
-            }, JsonOptions);
-        }
-
-        return JsonSerializer.Serialize(new
-        {
-            success = true,
-            gameName = game.GameName,
-            message = $"Game process for '{game.GameName}' stopped successfully."
-        }, JsonOptions);
-    }
-
-    public async Task<string> IndexGameAssetsAsync(
-        string? gameDirectory = null,
-        CancellationToken ct = default)
-    {
-        var targetGameDir = !string.IsNullOrWhiteSpace(gameDirectory)
-            ? gameDirectory
-            : _activeGameDirectory;
-
-        if (string.IsNullOrWhiteSpace(targetGameDir))
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = "Game directory was not specified and no active game session is cached. Call inspect first or provide gameDirectory.",
-                detail = "Target game directory path required."
-            }, JsonOptions);
-        }
-
-        if (_indexAssetsUseCase == null)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = "IndexAssetsUseCase is not configured in this environment.",
-                detail = "Missing use case dependency."
-            }, JsonOptions);
-        }
-
-        var detectResult = await _gameDetector.DetectGameAsync(targetGameDir, ct).ConfigureAwait(false);
-        if (detectResult.IsFailure)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = detectResult.Error.Message,
-                detail = detectResult.Error.Detail
-            }, JsonOptions);
-        }
-
-        var game = detectResult.Value;
-        _activeGameDirectory = targetGameDir;
-        var dbPath = _storageLayout.GetDatabasePath(game.GameName);
-
-        var indexResult = await _indexAssetsUseCase.ExecuteAsync(game, dbPath, ct).ConfigureAwait(false);
-        if (indexResult.IsFailure)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = indexResult.Error.Message,
-                detail = indexResult.Error.Detail
-            }, JsonOptions);
-        }
-
-        return JsonSerializer.Serialize(new
-        {
-            success = true,
-            gameName = game.GameName,
-            totalIndexed = indexResult.Value,
-            databasePath = dbPath,
-            message = $"Successfully indexed {indexResult.Value} game assets into SQLite index."
-        }, JsonOptions);
-    }
-
-    public async Task<string> DiscoverGameAssetsAsync(
-        string? searchPattern = null,
-        string? assetType = null,
-        int maxResults = 50,
-        string? gameDirectory = null,
-        string? containerName = null,
-        long? pathId = null,
-        int offset = 0,
-        CancellationToken ct = default)
-    {
-        var dirRes = await ResolveActiveGameDirectoryAsync(gameDirectory, ct).ConfigureAwait(false);
-        if (dirRes.IsFailure)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = dirRes.Error.Message,
-                detail = dirRes.Error.Detail
-            }, JsonOptions);
-        }
-
-        var targetGameDir = dirRes.Value;
-
-        if (_discoverAssetsUseCase == null)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = "DiscoverAssetsUseCase is not configured in this environment.",
-                detail = "Missing use case dependency."
-            }, JsonOptions);
-        }
-
-        var detectResult = await _gameDetector.DetectGameAsync(targetGameDir, ct).ConfigureAwait(false);
-        if (detectResult.IsFailure)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = detectResult.Error.Message,
-                detail = detectResult.Error.Detail
-            }, JsonOptions);
-        }
-
-        var game = detectResult.Value;
-        _activeGameDirectory = targetGameDir;
-        var dbPath = _storageLayout.GetDatabasePath(game.GameName);
-
-        int clampedMax = Math.Clamp(maxResults <= 0 ? 50 : maxResults, 1, 500);
-        int clampedOffset = Math.Max(0, offset);
-
-        var filter = new AssetDiscoveryFilter(
-            SearchPattern: searchPattern,
-            AssetType: assetType,
-            MaxResults: clampedMax,
-            ContainerName: containerName,
-            PathId: pathId,
-            Offset: clampedOffset);
-
-        var result = await _discoverAssetsUseCase.ExecutePageAsync(game, filter, dbPath, ct).ConfigureAwait(false);
-        if (result.IsFailure)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = result.Error.Message,
-                detail = result.Error.Detail
-            }, JsonOptions);
-        }
-
-        var page = result.Value;
-        var containers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var asset in page.Assets)
-        {
-            if (!string.IsNullOrEmpty(asset.SourceContainer) && !containers.ContainsKey(asset.SourceContainer))
-            {
-                containers[asset.SourceContainer] = asset.SourceContainerPath;
+                return JsonSerializer.Serialize(new
+                {
+                    success = true,
+                    visionTier = VisionTier.BaseWindow.ToString(),
+                    capabilities = BaseWindowCapabilityList,
+                    screenshotMethod = "Win32.PrintWindow+BitBlt",
+                    pointerMethod = "Win32.SendInput",
+                    metadata = new Dictionary<string, string>
+                    {
+                        ["mode"] = "BaseWindow (Tier 1 Win32 fallback — no in-game sensor required)"
+                    }
+                }, JsonOptions);
             }
         }
 
         return JsonSerializer.Serialize(new
         {
-            success = true,
-            gameName = game.GameName,
-            totalMatches = page.TotalMatches,
-            totalDiscovered = page.Assets.Count,
-            returnedCount = page.Assets.Count,
-            offset = clampedOffset,
-            hasMore = clampedOffset + page.Assets.Count < page.TotalMatches,
-            filter = new { searchPattern, assetType, maxResults = clampedMax, offset = clampedOffset, containerName, pathId },
-            containers = containers,
-            assets = page.Assets.Select(a => new
-            {
-                name = a.Name,
-                assetType = a.AssetType,
-                container = a.SourceContainer,
-                pathId = a.PathId,
-                width = a.Width,
-                height = a.Height,
-                byteSize = a.ByteSize,
-                extension = a.Extension
-            }),
-            nextSuggestedStep = page.Assets.Count > 0
-                ? $"Returned {page.Assets.Count} of {page.TotalMatches} matching assets (offset={clampedOffset}). Call 'extract-assets' or paginate with offset={clampedOffset + page.Assets.Count}."
-                : "No matching assets found. Try a broader search pattern, check 'inspect-runtime-assets' for runtime AssetBundles, or omit the filter."
+            success = false,
+            error = "No active target window or Vision sensor connection found.",
+            suggestion = "Launch any game or emulator via 'game-launch(targetPath)' first."
         }, JsonOptions);
     }
 
-    public async Task<string> ExtractGameAssetsAsync(
-        string? searchPattern = null,
-        string? assetType = null,
-        int maxResults = 50,
-        string? outputDirectory = null,
-        string? gameDirectory = null,
-        string? containerName = null,
-        long? pathId = null,
-        bool disambiguateCollisions = true,
-        CancellationToken ct = default)
-    {
-        var targetGameDir = !string.IsNullOrWhiteSpace(gameDirectory)
-            ? gameDirectory
-            : _activeGameDirectory;
-
-        if (string.IsNullOrWhiteSpace(targetGameDir))
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = "Game directory was not specified and no active game session is cached. Call inspect first or provide gameDirectory.",
-                detail = "Target game directory path required."
-            }, JsonOptions);
-        }
-
-        if (_extractAssetsUseCase == null)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = "ExtractAssetsUseCase is not configured in this environment.",
-                detail = "Missing use case dependency."
-            }, JsonOptions);
-        }
-
-        var detectResult = await _gameDetector.DetectGameAsync(targetGameDir, ct).ConfigureAwait(false);
-        if (detectResult.IsFailure)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = detectResult.Error.Message,
-                detail = detectResult.Error.Detail
-            }, JsonOptions);
-        }
-
-        var game = detectResult.Value;
-        _activeGameDirectory = targetGameDir;
-
-        var filter = new AssetExtractionFilter(
-            SearchPattern: searchPattern,
-            AssetType: assetType,
-            MaxResults: maxResults,
-            ContainerName: containerName,
-            PathId: pathId,
-            DisambiguateCollisions: disambiguateCollisions);
-
-        var result = await _extractAssetsUseCase.ExecuteAsync(game, filter, outputDirectory, ct).ConfigureAwait(false);
-        if (result.IsFailure)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = result.Error.Message,
-                detail = result.Error.Detail
-            }, JsonOptions);
-        }
-
-        var outputDir = string.IsNullOrWhiteSpace(outputDirectory)
-            ? _storageLayout.GetAssetsDir(game.GameName)
-            : outputDirectory;
-
-        return JsonSerializer.Serialize(new
-        {
-            success = true,
-            gameName = game.GameName,
-            totalExtracted = result.Value.Count,
-            outputDirectory = outputDir,
-            filter = new { searchPattern, assetType, maxResults, containerName, pathId, disambiguateCollisions },
-            extractedAssets = result.Value.Select(a => new
-            {
-                name = a.Name,
-                assetType = a.AssetType,
-                outputFilePath = a.OutputFilePath,
-                fileSizeBytes = a.FileSizeBytes,
-                width = a.Width,
-                height = a.Height,
-                pathId = a.PathId,
-                sourceContainer = a.SourceContainer
-            }),
-            nextSuggestedStep = result.Value.Count > 0
-                ? $"Extracted {result.Value.Count} assets to '{outputDir}'. Modders and agents can now inspect them directly."
-                : "No matching assets extracted. Check your search pattern."
-        }, JsonOptions);
-    }
-
-    public async Task<string> GetGameCapabilitiesAsync(
-        int? port = null,
-        string? token = null,
-        CancellationToken ct = default)
-    {
-        if (_visionBridgeClient == null)
-        {
-            return SerializeMissingClientError();
-        }
-
-        var conn = ResolveBridgeConnection(port, token);
-        if (conn.ErrorMessage != null)
-        {
-            return SerializeConnectionError(conn.ErrorMessage, conn.ErrorDetail, conn.Suggestion);
-        }
-
-        var result = await _visionBridgeClient.GetCapabilitiesAsync(conn.BaseUrl!, conn.Token, ct).ConfigureAwait(false);
-        if (result.IsFailure)
-        {
-            return SerializeConnectionError(
-                "gioco non connesso",
-                $"Impossibile comunicare con il VisionBridge ({result.Error.Code}): {result.Error.Message}",
-                "Verifica che il gioco sia in esecuzione con il plugin Candied.VisionBridge e che risponda sulla porta specificata.");
-        }
-
-        var caps = result.Value;
-        return JsonSerializer.Serialize(new
-        {
-            success = true,
-            capabilities = new
-            {
-                ugui = caps.Ugui,
-                eventSystem = caps.EventSystem,
-                uiToolkit = caps.UiToolkit,
-                legacyInput = caps.LegacyInput,
-                inputSystem = caps.InputSystem,
-                screenshot = caps.Screenshot,
-                screenshotMethod = caps.ScreenshotMethod,
-                screenshotLimitations = caps.ScreenshotLimitations,
-                inputClickMethod = caps.InputClickMethod,
-                inputClickStatus = caps.InputClickStatus,
-                untestedMethods = caps.UntestedMethods
-            },
-            nextSuggestedStep = "Per interagire con il gioco, cattura un frame con 'screenshot' o consulta la scena con 'scene-info'."
-        }, JsonOptions);
-    }
-
-    public async Task<string> CaptureGameScreenshotAsync(
-        int? port = null,
-        string? token = null,
+    public async Task<string> CaptureScreenshotAsync(
         string? savePath = null,
-        string? gameDir = null,
+        string? targetPath = null,
+        int? port = null,
+        string? token = null,
         CancellationToken ct = default)
     {
-        if (_visionBridgeClient == null)
-        {
-            return SerializeMissingClientError();
-        }
-
-        var conn = ResolveBridgeConnection(port, token);
-        if (conn.ErrorMessage != null)
-        {
-            return SerializeConnectionError(conn.ErrorMessage, conn.ErrorDetail, conn.Suggestion);
-        }
-
-        var capResult = await _visionBridgeClient.GetCapabilitiesAsync(conn.BaseUrl!, conn.Token, ct).ConfigureAwait(false);
-        if (capResult.IsFailure)
-        {
-            return SerializeConnectionError(
-                "gioco non connesso",
-                $"Impossibile verificare capabilities per screenshot: {capResult.Error.Message}",
-                "Assicurati che il gioco sia in esecuzione con Candied.VisionBridge attivo.");
-        }
-
-        if (!capResult.Value.Screenshot)
+        var frameRes = await CaptureFrameInternalAsync(port, token, ct).ConfigureAwait(false);
+        if (frameRes.IsFailure)
         {
             return JsonSerializer.Serialize(new
             {
                 success = false,
-                error = "screenshot non disponibile",
-                detail = "Il plugin VisionBridge ha segnalato che il motore grafico non supporta la cattura frame in questo contesto.",
-                suggestion = "Verifica le capabilities con 'capabilities'."
+                error = frameRes.Error.Message,
+                code = frameRes.Error.Code,
+                suggestion = frameRes.Error.Suggestion
             }, JsonOptions);
         }
 
-        var scResult = await _visionBridgeClient.CaptureScreenshotAsync(conn.BaseUrl!, conn.Token, ct).ConfigureAwait(false);
-        if (scResult.IsFailure)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = "screenshot fallito",
-                detail = scResult.Error.Message,
-                suggestion = scResult.Error.Suggestion
-            }, JsonOptions);
-        }
-
-        var screenshot = scResult.Value;
-        string targetPath;
-
-        if (!string.IsNullOrWhiteSpace(savePath))
-        {
-            targetPath = ResolveWorkspacePath(savePath);
-        }
-        else
-        {
-            string targetDir;
-            var activeDir = !string.IsNullOrWhiteSpace(gameDir) ? gameDir : _activeGameDirectory;
-            if (!string.IsNullOrWhiteSpace(activeDir))
-            {
-                var gameName = await ResolveGameNameAsync(activeDir, ct).ConfigureAwait(false);
-                targetDir = Path.Combine(_storageLayout.GetGameArtifactsDir(gameName), "screenshots");
-            }
-            else
-            {
-                targetDir = Path.Combine(_storageLayout.CandiedRoot, "screenshots");
-            }
-
-            Directory.CreateDirectory(targetDir);
-            targetPath = Path.Combine(targetDir, $"screenshot_{DateTime.UtcNow:yyyyMMdd_HHmmssfff}.png");
-        }
-
-        var parentDir = Path.GetDirectoryName(targetPath);
-        if (!string.IsNullOrEmpty(parentDir) && !Directory.Exists(parentDir))
+        var frame = frameRes.Value;
+        string outputFilePath = ResolveScreenshotSavePath(savePath, targetPath);
+        string? parentDir = Path.GetDirectoryName(outputFilePath);
+        if (!string.IsNullOrEmpty(parentDir))
         {
             Directory.CreateDirectory(parentDir);
         }
 
-        await File.WriteAllBytesAsync(targetPath, screenshot.PngBytes, ct).ConfigureAwait(false);
+        await File.WriteAllBytesAsync(outputFilePath, frame.PngBytes, ct).ConfigureAwait(false);
 
         return JsonSerializer.Serialize(new
         {
             success = true,
-            filePath = targetPath,
-            width = screenshot.Width,
-            height = screenshot.Height,
-            isUniform = screenshot.IsUniform,
-            method = capResult.Value.ScreenshotMethod,
-            limitations = capResult.Value.ScreenshotLimitations,
-            fileSizeBytes = screenshot.PngBytes.Length,
-            message = "Screenshot catturato e salvato con successo.",
-            nextSuggestedStep = "Ispeziona l'immagine salvata per individuare coordinate (x, y) e usa 'click'."
+            filePath = outputFilePath,
+            width = frame.Width,
+            height = frame.Height,
+            isUniform = frame.IsUniform,
+            visionTier = frame.SourceTier.ToString(),
+            fileSizeBytes = frame.PngBytes.Length,
+            nextSuggestedStep = "Inspect the saved PNG and interact via 'send-input' or 'trigger-action'."
         }, JsonOptions);
     }
 
-    public async Task<string> ClickGameAtAsync(
-        float x,
-        float y,
-        int button = 0,
-        int holdFrames = 6,
-        string? method = null,
+    public async Task<string> SendInputAsync(
+        VisionInputRequest request,
         int? port = null,
         string? token = null,
         CancellationToken ct = default)
     {
-        if (_visionBridgeClient == null)
+        ArgumentNullException.ThrowIfNull(request);
+
+        Result<VisionInputResponse, VisionError> dispatchRes;
+        VisionTier usedTier = VisionTier.SensorBridge;
+
+        var sensorConn = await TryResolveSensorConnectionAsync(port, token, ct).ConfigureAwait(false);
+        if (sensorConn.BaseUrl != null && _visionSensorClient != null)
         {
-            return SerializeMissingClientError();
+            var sensorTry = await _visionSensorClient.SendInputAsync(sensorConn.BaseUrl, sensorConn.Token, request, ct).ConfigureAwait(false);
+            if (sensorTry.IsSuccess || port.HasValue)
+            {
+                dispatchRes = sensorTry;
+            }
+            else if (_studioClient != null)
+            {
+                usedTier = VisionTier.BaseWindow;
+                dispatchRes = await _studioClient.SendInputAsync(request, ct).ConfigureAwait(false);
+            }
+            else
+            {
+                dispatchRes = sensorTry;
+            }
+        }
+        else if (_studioClient != null)
+        {
+            usedTier = VisionTier.BaseWindow;
+            dispatchRes = await _studioClient.SendInputAsync(request, ct).ConfigureAwait(false);
+        }
+        else
+        {
+            return SerializeError("Neither Vision sensor nor Studio host client is connected.");
         }
 
-        var conn = ResolveBridgeConnection(port, token);
-        if (conn.ErrorMessage != null)
-        {
-            return SerializeConnectionError(conn.ErrorMessage, conn.ErrorDetail, conn.Suggestion);
-        }
-
-        var capResult = await _visionBridgeClient.GetCapabilitiesAsync(conn.BaseUrl!, conn.Token, ct).ConfigureAwait(false);
-        if (capResult.IsFailure)
-        {
-            return SerializeConnectionError(
-                "gioco non connesso",
-                $"Impossibile verificare capabilities per click: {capResult.Error.Message}",
-                "Assicurati che il gioco sia in esecuzione con Candied.VisionBridge attivo.");
-        }
-
-        var caps = capResult.Value;
-        if (!caps.InputSystem && !caps.LegacyInput)
+        if (dispatchRes.IsFailure)
         {
             return JsonSerializer.Serialize(new
             {
                 success = false,
-                error = "input non disponibile",
-                detail = "Il gioco non supporta né UnityEngine.InputSystem né UnityEngine.Input legacy.",
-                suggestion = "Verifica le capabilities con 'capabilities'."
-            }, JsonOptions);
-        }
-
-        var clickResult = await _visionBridgeClient.SendInputClickAsync(
-            conn.BaseUrl!,
-            conn.Token,
-            x,
-            y,
-            button,
-            method,
-            action: "click",
-            holdFrames,
-            ct).ConfigureAwait(false);
-
-        if (clickResult.IsFailure)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = "click fallito",
-                detail = clickResult.Error.Message,
-                suggestion = clickResult.Error.Suggestion
+                error = dispatchRes.Error.Message,
+                code = dispatchRes.Error.Code,
+                suggestion = dispatchRes.Error.Suggestion
             }, JsonOptions);
         }
 
         string? markedScreenshotPath = null;
-        try
+        if (string.Equals(request.Channel, VisionConstants.ChannelPointer, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(request.Action, "click", StringComparison.OrdinalIgnoreCase) &&
+            request.X.HasValue && request.Y.HasValue)
         {
-            if (capResult.Value.Screenshot)
+            try
             {
-                var scResult = await _visionBridgeClient.CaptureScreenshotAsync(conn.BaseUrl!, conn.Token, ct).ConfigureAwait(false);
-                if (scResult.IsSuccess && scResult.Value.PngBytes != null && scResult.Value.PngBytes.Length > 0)
+                var followUp = await CaptureFrameInternalAsync(port, token, ct).ConfigureAwait(false);
+                if (followUp.IsSuccess && followUp.Value.PngBytes.Length > 0)
                 {
-                    var markedPng = PurePngDecoder.DrawClickMarker(scResult.Value.PngBytes, (int)Math.Round(x), (int)Math.Round(y));
-                    var activeDir = !string.IsNullOrWhiteSpace(_activeGameDirectory) ? _activeGameDirectory : null;
-                    string targetDir;
-                    if (!string.IsNullOrWhiteSpace(activeDir))
+                    byte[] marked = PurePngDecoder.DrawClickMarker(
+                        followUp.Value.PngBytes,
+                        (int)Math.Round(request.X.Value),
+                        (int)Math.Round(request.Y.Value));
+                    markedScreenshotPath = ResolveScreenshotSavePath(null, null, prefix: "screenshot_click");
+                    string? dir = Path.GetDirectoryName(markedScreenshotPath);
+                    if (!string.IsNullOrEmpty(dir))
                     {
-                        var gameName = await ResolveGameNameAsync(activeDir, ct).ConfigureAwait(false);
-                        targetDir = Path.Combine(_storageLayout.GetGameArtifactsDir(gameName), "screenshots");
-                    }
-                    else
-                    {
-                        targetDir = Path.Combine(_storageLayout.CandiedRoot, "screenshots");
+                        Directory.CreateDirectory(dir);
                     }
 
-                    Directory.CreateDirectory(targetDir);
-                    markedScreenshotPath = Path.Combine(targetDir, $"screenshot_click_{DateTime.UtcNow:yyyyMMdd_HHmmssfff}.png");
-                    await File.WriteAllBytesAsync(markedScreenshotPath, markedPng, ct).ConfigureAwait(false);
+                    await File.WriteAllBytesAsync(markedScreenshotPath, marked, ct).ConfigureAwait(false);
                 }
             }
+            catch
+            {
+            }
         }
-        catch
+
+        return JsonSerializer.Serialize(new
         {
-            // Non-fatal if screenshot capture fails after click
+            success = dispatchRes.Value.Success,
+            visionTier = usedTier.ToString(),
+            channel = dispatchRes.Value.Channel,
+            action = dispatchRes.Value.Action,
+            hitPointX = dispatchRes.Value.HitPointX,
+            hitPointY = dispatchRes.Value.HitPointY,
+            screenshotPath = markedScreenshotPath,
+            message = dispatchRes.Value.Message
+        }, JsonOptions);
+    }
+
+    public async Task<string> GetControlsAsync(
+        string? targetPath = null,
+        string? runnerPath = null,
+        CancellationToken ct = default)
+    {
+        string targetName = await ResolveTargetNameForControlsAsync(targetPath, runnerPath, ct).ConfigureAwait(false);
+        string profilePath = _storageLayout.GetControlProfilePath(targetName);
+
+        GameControlProfile? profile = null;
+        if (_controlProfileStore != null)
+        {
+            profile = await _controlProfileStore.LoadProfileAsync(profilePath, ct).ConfigureAwait(false);
         }
 
         return JsonSerializer.Serialize(new
         {
             success = true,
-            hitPointX = x,
-            hitPointY = y,
-            button = button,
-            method = caps.InputClickMethod,
-            screenshotPath = markedScreenshotPath,
-            message = clickResult.Value.Message,
-            warning = "Il click viene inviato tramite input injection in-process; verificare sempre l'effetto con lo screenshot annotato in screenshotPath o wait-idle.",
-            nextSuggestedStep = "Verifica lo screenshot con il marcatore del click in 'screenshotPath' per confermare il punto di impatto."
+            targetName,
+            profilePath,
+            hasCustomProfile = profile != null,
+            actions = profile?.Actions ?? Array.Empty<ControlActionEntry>(),
+            builtInFallbacks = BuiltInFallbackActionList,
+            nextSuggestedStep = "Call 'trigger-action(actionName)' to execute a semantic action or 'set-controls' to register discovered bindings."
         }, JsonOptions);
     }
 
-    public async Task<string> WaitGameIdleAsync(
+    public async Task<string> SetControlsAsync(
+        IReadOnlyList<ControlActionEntry> actions,
+        bool overwriteUserBindings = false,
+        string? targetPath = null,
+        string? runnerPath = null,
+        CancellationToken ct = default)
+    {
+        if (_controlProfileStore == null)
+        {
+            return SerializeError("IGameControlProfileStore is not configured.");
+        }
+
+        if (actions == null || actions.Count == 0)
+        {
+            return SerializeError("At least one control action entry is required.");
+        }
+
+        string targetName = await ResolveTargetNameForControlsAsync(targetPath, runnerPath, ct).ConfigureAwait(false);
+        string profilePath = _storageLayout.GetControlProfilePath(targetName);
+
+        var updated = await _controlProfileStore.MergeAndSaveActionsAsync(
+            profilePath,
+            targetName,
+            targetName,
+            actions,
+            overwriteHigherPrioritySources: overwriteUserBindings,
+            ct).ConfigureAwait(false);
+
+        return JsonSerializer.Serialize(new
+        {
+            success = true,
+            targetName,
+            profilePath,
+            totalActions = updated.Actions.Count,
+            actions = updated.Actions
+        }, JsonOptions);
+    }
+
+    public async Task<string> TriggerActionAsync(
+        string actionName,
+        string? targetPath = null,
+        string? runnerPath = null,
+        int? port = null,
+        string? token = null,
+        CancellationToken ct = default)
+    {
+        string targetName = await ResolveTargetNameForControlsAsync(targetPath, runnerPath, ct).ConfigureAwait(false);
+        string profilePath = _storageLayout.GetControlProfilePath(targetName);
+
+        GameControlProfile? profile = _controlProfileStore != null
+            ? await _controlProfileStore.LoadProfileAsync(profilePath, ct).ConfigureAwait(false)
+            : null;
+
+        IReadOnlyCollection<string>? activeCaps = null;
+        int screenW = 1280;
+        int screenH = 720;
+
+        var sensorConn = await TryResolveSensorConnectionAsync(port, token, ct).ConfigureAwait(false);
+        if (sensorConn.BaseUrl != null && _visionSensorClient != null)
+        {
+            var capsRes = await _visionSensorClient.GetCapabilitiesAsync(sensorConn.BaseUrl, sensorConn.Token, ct).ConfigureAwait(false);
+            if (capsRes.IsSuccess)
+            {
+                activeCaps = capsRes.Value.Capabilities;
+            }
+
+            var helloRes = await _visionSensorClient.GetHelloAsync(sensorConn.BaseUrl, sensorConn.Token, ct).ConfigureAwait(false);
+            if (helloRes.IsSuccess && helloRes.Value.ScreenWidth > 0 && helloRes.Value.ScreenHeight > 0)
+            {
+                screenW = helloRes.Value.ScreenWidth;
+                screenH = helloRes.Value.ScreenHeight;
+            }
+        }
+
+        var resolvedReq = ControlActionResolver.ResolveAction(actionName, profile, activeCaps, screenW, screenH);
+        if (resolvedReq.IsFailure)
+        {
+            return JsonSerializer.Serialize(new
+            {
+                success = false,
+                code = resolvedReq.Error.Code,
+                error = resolvedReq.Error.Message,
+                suggestion = resolvedReq.Error.Suggestion
+            }, JsonOptions);
+        }
+
+        return await SendInputAsync(resolvedReq.Value, port, token, ct).ConfigureAwait(false);
+    }
+
+    public async Task<string> WaitIdleAsync(
         int maxFrames = 10,
         int timeoutMs = 3000,
         int? port = null,
         string? token = null,
         CancellationToken ct = default)
     {
-        if (_visionBridgeClient == null)
+        var sensorConn = await TryResolveSensorConnectionAsync(port, token, ct).ConfigureAwait(false);
+        if (sensorConn.BaseUrl != null && _visionSensorClient != null)
         {
-            return SerializeMissingClientError();
+            var res = await _visionSensorClient.WaitForIdleAsync(sensorConn.BaseUrl, sensorConn.Token, maxFrames, timeoutMs, ct).ConfigureAwait(false);
+            if (res.IsSuccess)
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    success = true,
+                    visionTier = VisionTier.SensorBridge.ToString(),
+                    idleReached = res.Value.IdleReached,
+                    elapsedFrames = res.Value.ElapsedFrames,
+                    elapsedMs = res.Value.ElapsedMs
+                }, JsonOptions);
+            }
         }
 
-        var conn = ResolveBridgeConnection(port, token);
-        if (conn.ErrorMessage != null)
+        // Tier 1 BaseWindow visual frame-diff idle wait
+        var sw = Stopwatch.StartNew();
+        int clampedTimeout = Math.Clamp(timeoutMs, 200, 15000);
+        while (sw.ElapsedMilliseconds < clampedTimeout && !ct.IsCancellationRequested)
         {
-            return SerializeConnectionError(conn.ErrorMessage, conn.ErrorDetail, conn.Suggestion);
+            var f1 = await CaptureFrameInternalAsync(port, token, ct).ConfigureAwait(false);
+            if (f1.IsFailure)
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    success = false,
+                    error = f1.Error.Message,
+                    suggestion = f1.Error.Suggestion
+                }, JsonOptions);
+            }
+
+            await Task.Delay(180, ct).ConfigureAwait(false);
+            var f2 = await CaptureFrameInternalAsync(port, token, ct).ConfigureAwait(false);
+            if (f2.IsSuccess && PurePngDecoder.CalculateDiffPercentage(f1.Value.PngBytes, f2.Value.PngBytes) < 0.25)
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    success = true,
+                    visionTier = VisionTier.BaseWindow.ToString(),
+                    idleReached = true,
+                    elapsedMs = sw.ElapsedMilliseconds
+                }, JsonOptions);
+            }
         }
 
-        var result = await _visionBridgeClient.WaitForIdleAsync(conn.BaseUrl!, conn.Token, maxFrames, timeoutMs, ct).ConfigureAwait(false);
-        if (result.IsFailure)
+        return JsonSerializer.Serialize(new
+        {
+            success = true,
+            visionTier = VisionTier.BaseWindow.ToString(),
+            idleReached = false,
+            elapsedMs = sw.ElapsedMilliseconds
+        }, JsonOptions);
+    }
+
+    public async Task<string> ListUiElementsAsync(
+        int? port = null,
+        string? token = null,
+        CancellationToken ct = default)
+    {
+        var sensorConn = await TryResolveSensorConnectionAsync(port, token, ct).ConfigureAwait(false);
+        if (sensorConn.BaseUrl == null || _visionSensorClient == null)
         {
             return JsonSerializer.Serialize(new
             {
                 success = false,
-                error = "wait_idle fallito",
-                detail = result.Error.Message,
-                suggestion = result.Error.Suggestion
+                error = "Tier 2 Vision sensor is not connected.",
+                suggestion = "UI tree enumeration requires a Tier 2 sensor. In Tier 1 BaseWindow mode, use 'screenshot' + 'send-input' or 'trigger-action'."
+            }, JsonOptions);
+        }
+
+        var res = await _visionSensorClient.GetUiElementsAsync(sensorConn.BaseUrl, sensorConn.Token, ct).ConfigureAwait(false);
+        if (res.IsFailure)
+        {
+            return JsonSerializer.Serialize(new
+            {
+                success = false,
+                error = res.Error.Message,
+                suggestion = res.Error.Suggestion
             }, JsonOptions);
         }
 
         return JsonSerializer.Serialize(new
         {
             success = true,
-            idleReached = result.Value.IdleReached,
-            elapsedFrames = result.Value.ElapsedFrames,
-            message = "Attesa di stabilizzazione rendering completata.",
-            nextSuggestedStep = "Cattura un nuovo frame con 'screenshot' per validare l'effetto dell'azione."
+            count = res.Value.Count,
+            elements = res.Value
         }, JsonOptions);
     }
 
-    public async Task<string> GetGameSceneInfoAsync(
+    public async Task<string> GetSceneInfoAsync(
         int? port = null,
         string? token = null,
         CancellationToken ct = default)
     {
-        if (_visionBridgeClient == null)
-        {
-            return SerializeMissingClientError();
-        }
-
-        var conn = ResolveBridgeConnection(port, token);
-        if (conn.ErrorMessage != null)
-        {
-            return SerializeConnectionError(conn.ErrorMessage, conn.ErrorDetail, conn.Suggestion);
-        }
-
-        var sceneResult = await _visionBridgeClient.GetSceneInfoAsync(conn.BaseUrl!, conn.Token, ct).ConfigureAwait(false);
-        if (sceneResult.IsSuccess)
-        {
-            var s = sceneResult.Value;
-            return JsonSerializer.Serialize(new
-            {
-                success = true,
-                activeSceneName = s.ActiveSceneName,
-                activeSceneIndex = s.ActiveSceneIndex,
-                rootCount = s.RootCount,
-                isLoaded = s.IsLoaded,
-                loadedSceneCount = s.LoadedSceneCount,
-                screenWidth = s.ScreenWidth,
-                screenHeight = s.ScreenHeight,
-                activeRendererCount = s.ActiveRendererCount,
-                timeSinceLevelLoad = s.TimeSinceLevelLoad,
-                nextSuggestedStep = "Usa 'screenshot' per osservare visivamente la scena o 'list-ui' per enumerarne i controlli."
-            }, JsonOptions);
-        }
-
-        // Fallback to /hello if /scene is not supported
-        var helloResult = await _visionBridgeClient.GetHelloAsync(conn.BaseUrl!, conn.Token, ct).ConfigureAwait(false);
-        if (helloResult.IsSuccess)
-        {
-            var h = helloResult.Value;
-            return JsonSerializer.Serialize(new
-            {
-                success = true,
-                activeSceneName = "Unknown",
-                activeSceneIndex = -1,
-                rootCount = 0,
-                isLoaded = true,
-                loadedSceneCount = 1,
-                screenWidth = h.ScreenWidth,
-                screenHeight = h.ScreenHeight,
-                note = "Scena non enumerabile direttamente; dimensioni e versione Unity ricavate da /hello.",
-                unityVersion = h.UnityVersion,
-                nextSuggestedStep = "Usa 'screenshot' per catturare la schermata attuale."
-            }, JsonOptions);
-        }
-
-        return SerializeConnectionError(
-            "gioco non connesso",
-            $"Impossibile interrogare la scena: {sceneResult.Error.Message}",
-            "Assicurati che il gioco sia in esecuzione con Candied.VisionBridge attivo.");
-    }
-
-    public async Task<string> InspectSceneObjectsAsync(
-        string? nameFilter = null,
-        int? port = null,
-        string? token = null,
-        bool includeInactive = false,
-        bool visibleOnly = false,
-        string? sortingLayer = null,
-        int maxResults = 100,
-        CancellationToken ct = default)
-    {
-        if (_visionBridgeClient == null)
-        {
-            return SerializeMissingClientError();
-        }
-
-        var conn = ResolveBridgeConnection(port, token);
-        if (conn.ErrorMessage != null)
-        {
-            return SerializeConnectionError(conn.ErrorMessage, conn.ErrorDetail, conn.Suggestion);
-        }
-
-        var query = new SceneObjectsQuery(
-            NameFilter: nameFilter,
-            IncludeInactive: includeInactive,
-            VisibleOnly: visibleOnly,
-            SortingLayer: sortingLayer,
-            MaxResults: Math.Clamp(maxResults <= 0 ? 100 : maxResults, 1, 1000));
-
-        var result = await _visionBridgeClient.InspectSceneObjectsAsync(conn.BaseUrl!, conn.Token, query, ct).ConfigureAwait(false);
-        if (result.IsFailure)
+        var sensorConn = await TryResolveSensorConnectionAsync(port, token, ct).ConfigureAwait(false);
+        if (sensorConn.BaseUrl == null || _visionSensorClient == null)
         {
             return JsonSerializer.Serialize(new
             {
                 success = false,
-                error = "ispezione scena fallita",
-                detail = result.Error.Message,
-                suggestion = result.Error.Suggestion
+                error = "Tier 2 Vision sensor is not connected.",
+                suggestion = "Scene telemetry requires a Tier 2 sensor. Use 'screenshot' in Tier 1 BaseWindow mode."
             }, JsonOptions);
         }
 
-        var resp = result.Value;
+        var res = await _visionSensorClient.GetSceneInfoAsync(sensorConn.BaseUrl, sensorConn.Token, ct).ConfigureAwait(false);
+        if (res.IsFailure)
+        {
+            return JsonSerializer.Serialize(new
+            {
+                success = false,
+                error = res.Error.Message,
+                suggestion = res.Error.Suggestion
+            }, JsonOptions);
+        }
+
         return JsonSerializer.Serialize(new
         {
-            success = resp.Success,
-            totalCameras = resp.TotalCameras,
-            totalRenderers = resp.TotalRenderers,
-            totalMatched = resp.TotalMatched > 0 ? resp.TotalMatched : resp.TotalRenderers,
-            truncated = resp.Truncated,
-            filter = new { nameFilter, includeInactive, visibleOnly, sortingLayer, maxResults = query.MaxResults },
-            cameras = resp.Cameras,
-            renderers = resp.Renderers,
-            message = resp.Message,
-            nextSuggestedStep = resp.Truncated
-                ? $"Output troncato a {resp.TotalRenderers} di {resp.TotalMatched} renderer corrispondenti. Restringi con 'nameFilter', 'visibleOnly=true', o 'sortingLayer'."
-                : "Analizza fullPath, localPosition, sortingLayer, spriteName, spritePivot, components e isVisible per verificare lo stato di rendering."
+            success = true,
+            scene = res.Value
+        }, JsonOptions);
+    }
+
+    public async Task<string> InspectSceneAsync(
+        string? nameFilter = null,
+        bool includeInactive = false,
+        bool visibleOnly = false,
+        string? attributeFilter = null,
+        int maxResults = 100,
+        int? port = null,
+        string? token = null,
+        CancellationToken ct = default)
+    {
+        var sensorConn = await TryResolveSensorConnectionAsync(port, token, ct).ConfigureAwait(false);
+        if (sensorConn.BaseUrl == null || _visionSensorClient == null)
+        {
+            return JsonSerializer.Serialize(new
+            {
+                success = false,
+                error = "Tier 2 Vision sensor is not connected.",
+                suggestion = "Scene graph inspection requires an active Tier 2 sensor."
+            }, JsonOptions);
+        }
+
+        var query = new SceneGraphQuery(
+            NameFilter: nameFilter,
+            IncludeInactive: includeInactive,
+            VisibleOnly: visibleOnly,
+            AttributeFilter: attributeFilter,
+            MaxResults: Math.Clamp(maxResults <= 0 ? 100 : maxResults, 1, 1000));
+
+        var res = await _visionSensorClient.InspectSceneAsync(sensorConn.BaseUrl, sensorConn.Token, query, ct).ConfigureAwait(false);
+        if (res.IsFailure)
+        {
+            return JsonSerializer.Serialize(new
+            {
+                success = false,
+                error = res.Error.Message,
+                suggestion = res.Error.Suggestion
+            }, JsonOptions);
+        }
+
+        return JsonSerializer.Serialize(new
+        {
+            success = res.Value.Success,
+            totalCameras = res.Value.TotalCameras,
+            totalNodes = res.Value.TotalNodes,
+            totalMatched = res.Value.TotalMatched,
+            truncated = res.Value.Truncated,
+            cameras = res.Value.Cameras,
+            nodes = res.Value.Nodes,
+            message = res.Value.Message
         }, JsonOptions);
     }
 
@@ -1896,633 +1705,307 @@ public sealed class AgentWorkbenchService
         string? token = null,
         CancellationToken ct = default)
     {
-        if (_visionBridgeClient == null)
+        var sensorConn = await TryResolveSensorConnectionAsync(port, token, ct).ConfigureAwait(false);
+        if (sensorConn.BaseUrl == null || _visionSensorClient == null)
         {
-            return SerializeMissingClientError();
-        }
-
-        var conn = ResolveBridgeConnection(port, token);
-        if (conn.ErrorMessage != null)
-        {
-            return SerializeConnectionError(conn.ErrorMessage, conn.ErrorDetail, conn.Suggestion);
+            return JsonSerializer.Serialize(new
+            {
+                success = false,
+                error = "Tier 2 Vision sensor is not connected.",
+                suggestion = "Runtime asset inspection requires an active Tier 2 sensor."
+            }, JsonOptions);
         }
 
         var query = new RuntimeAssetsQuery(
             NameFilter: nameFilter,
-            AssetType: string.IsNullOrWhiteSpace(assetType) ? "Sprite" : assetType.Trim(),
+            AssetType: string.IsNullOrWhiteSpace(assetType) ? "All" : assetType.Trim(),
             MaxResults: Math.Clamp(maxResults <= 0 ? 50 : maxResults, 1, 500));
 
-        var result = await _visionBridgeClient.InspectRuntimeAssetsAsync(conn.BaseUrl!, conn.Token, query, ct).ConfigureAwait(false);
-        if (result.IsFailure)
+        var res = await _visionSensorClient.InspectRuntimeAssetsAsync(sensorConn.BaseUrl, sensorConn.Token, query, ct).ConfigureAwait(false);
+        if (res.IsFailure)
         {
             return JsonSerializer.Serialize(new
             {
                 success = false,
-                error = "ispezione asset runtime fallita",
-                detail = result.Error.Message,
-                suggestion = result.Error.Suggestion
-            }, JsonOptions);
-        }
-
-        var resp = result.Value;
-        return JsonSerializer.Serialize(new
-        {
-            success = resp.Success,
-            totalBundles = resp.TotalBundles,
-            totalLoadedAssets = resp.TotalLoadedAssets,
-            returnedAssets = resp.LoadedAssets.Count,
-            truncated = resp.Truncated,
-            filter = new { nameFilter, assetType = query.AssetType, maxResults = query.MaxResults },
-            bundles = resp.Bundles,
-            loadedAssets = resp.LoadedAssets,
-            message = resp.Message
-        }, JsonOptions);
-    }
-
-    public async Task<string> ListGameUiElementsAsync(
-        int? port = null,
-        string? token = null,
-        CancellationToken ct = default)
-    {
-        if (_visionBridgeClient == null)
-        {
-            return SerializeMissingClientError();
-        }
-
-        var conn = ResolveBridgeConnection(port, token);
-        if (conn.ErrorMessage != null)
-        {
-            return SerializeConnectionError(conn.ErrorMessage, conn.ErrorDetail, conn.Suggestion);
-        }
-
-        var capResult = await _visionBridgeClient.GetCapabilitiesAsync(conn.BaseUrl!, conn.Token, ct).ConfigureAwait(false);
-        if (capResult.IsFailure)
-        {
-            return SerializeConnectionError(
-                "gioco non connesso",
-                $"Impossibile verificare capabilities per UI: {capResult.Error.Message}",
-                "Assicurati che il gioco sia in esecuzione con Candied.VisionBridge attivo.");
-        }
-
-        var caps = capResult.Value;
-        bool isEnumerable = caps.Ugui || caps.UiToolkit;
-
-        if (!isEnumerable)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = "list_ui non disponibile",
-                detail = "Il gioco non espone una UI uGUI (Selectable) o UI Toolkit enumerabile.",
-                suggestion = "list_ui non disponibile: usa screenshot + click"
-            }, JsonOptions);
-        }
-
-        var elementsResult = await _visionBridgeClient.GetUiElementsAsync(conn.BaseUrl!, conn.Token, ct).ConfigureAwait(false);
-        if (elementsResult.IsFailure)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = "recupero elementi UI fallito",
-                detail = elementsResult.Error.Message,
-                suggestion = "list_ui non disponibile: usa screenshot + click"
-            }, JsonOptions);
-        }
-
-        var elements = elementsResult.Value;
-        if (elements.Count == 0)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = true,
-                count = 0,
-                elements = Array.Empty<object>(),
-                suggestion = "Nessun elemento uGUI trovato nella scena attiva. Se il gioco usa bottoni personalizzati (es. Collider2D), usa screenshot + click per interagire tramite coordinate."
+                error = res.Error.Message,
+                suggestion = res.Error.Suggestion
             }, JsonOptions);
         }
 
         return JsonSerializer.Serialize(new
         {
-            success = true,
-            count = elements.Count,
-            elements = elements.Select(e => new
-            {
-                id = e.Id,
-                type = e.Type,
-                text = e.Text,
-                interactable = e.Interactable,
-                visible = e.Visible,
-                pixelRect = new { x = e.PixelRect.X, y = e.PixelRect.Y, width = e.PixelRect.Width, height = e.PixelRect.Height },
-                normalizedRect = new { x = e.NormalizedRect.X, y = e.NormalizedRect.Y, width = e.NormalizedRect.Width, height = e.NormalizedRect.Height }
-            }),
-            nextSuggestedStep = "Usa 'click' passando le coordinate centrali di uno degli elementi scoperti."
+            success = res.Value.Success,
+            totalContainers = res.Value.TotalContainers,
+            totalLoadedAssets = res.Value.TotalLoadedAssets,
+            truncated = res.Value.Truncated,
+            containers = res.Value.Containers,
+            loadedAssets = res.Value.LoadedAssets,
+            message = res.Value.Message
         }, JsonOptions);
     }
 
-    public async Task<string> ListRegisteredGamesAsync(CancellationToken ct = default)
+    private async Task<Result<VisionFrame, VisionError>> CaptureFrameInternalAsync(
+        int? port,
+        string? token,
+        CancellationToken ct)
     {
-        if (_gameRegistry == null)
+        var sensorConn = await TryResolveSensorConnectionAsync(port, token, ct).ConfigureAwait(false);
+        if (sensorConn.BaseUrl != null && _visionSensorClient != null)
         {
-            return JsonSerializer.Serialize(new { success = false, error = "Game registry is not configured." }, JsonOptions);
-        }
-
-        var games = await _gameRegistry.ListRegisteredGamesAsync(ct).ConfigureAwait(false);
-        return JsonSerializer.Serialize(new
-        {
-            success = true,
-            count = games.Count,
-            games = games.Select(g => new
+            var sensorFrame = await _visionSensorClient.CaptureScreenshotAsync(sensorConn.BaseUrl, sensorConn.Token, ct).ConfigureAwait(false);
+            if (sensorFrame.IsSuccess || port.HasValue)
             {
-                name = g.Name,
-                executablePath = g.ExecutablePath,
-                gameRootPath = g.GameRootPath,
-                architecture = g.Architecture,
-                unityVersion = g.UnityVersion,
-                hasBridgeInstalled = g.HasBridgeInstalled,
-                registeredAtUtc = g.RegisteredAtUtc.ToString("o")
-            })
-        }, JsonOptions);
-    }
-
-    public async Task<string> RegisterGameAsync(string name, string executablePath, CancellationToken ct = default)
-    {
-        if (_gameRegistry == null)
-        {
-            return JsonSerializer.Serialize(new { success = false, error = "Game registry is not configured." }, JsonOptions);
-        }
-
-        var result = await _gameRegistry.RegisterGameAsync(name, executablePath, ct).ConfigureAwait(false);
-        if (result.IsFailure)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = result.Error
-            }, JsonOptions);
-        }
-
-        var g = result.Value;
-        return JsonSerializer.Serialize(new
-        {
-            success = true,
-            message = $"Gioco '{g.Name}' registrato con successo.",
-            game = new
-            {
-                name = g.Name,
-                executablePath = g.ExecutablePath,
-                gameRootPath = g.GameRootPath,
-                architecture = g.Architecture,
-                unityVersion = g.UnityVersion,
-                hasBridgeInstalled = g.HasBridgeInstalled
-            }
-        }, JsonOptions);
-    }
-
-    public async Task<string> UnregisterGameAsync(string name, CancellationToken ct = default)
-    {
-        if (_gameRegistry == null)
-        {
-            return JsonSerializer.Serialize(new { success = false, error = "Game registry is not configured." }, JsonOptions);
-        }
-
-        var result = await _gameRegistry.UnregisterGameAsync(name, ct).ConfigureAwait(false);
-        if (result.IsFailure)
-        {
-            return JsonSerializer.Serialize(new { success = false, error = result.Error }, JsonOptions);
-        }
-
-        return JsonSerializer.Serialize(new { success = true, message = $"Gioco '{name}' rimosso dall'allowlist." }, JsonOptions);
-    }
-
-    public async Task<string> InstallBridgeAsync(string name, CancellationToken ct = default)
-    {
-        if (_gameRegistry == null)
-        {
-            return JsonSerializer.Serialize(new { success = false, error = "Game registry is not configured." }, JsonOptions);
-        }
-
-        var gameRes = await _gameRegistry.GetRegisteredGameAsync(name, ct).ConfigureAwait(false);
-        if (gameRes.IsFailure)
-        {
-            return JsonSerializer.Serialize(new { success = false, error = gameRes.Error }, JsonOptions);
-        }
-
-        var game = gameRes.Value;
-        var targetDir = Path.Combine(game.GameRootPath, "BepInEx", "plugins", "Candied.VisionBridge");
-        Directory.CreateDirectory(targetDir);
-
-        string? bridgeDll = FindBridgeBinary("Candied.VisionBridge.dll");
-        string? protocolDll = FindBridgeBinary("Candied.VisionBridge.Protocol.dll");
-
-        if (string.IsNullOrEmpty(bridgeDll) || !File.Exists(bridgeDll))
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = "Impossibile trovare il binario Candied.VisionBridge.dll compilato. Esegui `dotnet build` prima di installare il bridge."
-            }, JsonOptions);
-        }
-
-        File.Copy(bridgeDll, Path.Combine(targetDir, "Candied.VisionBridge.dll"), overwrite: true);
-        if (!string.IsNullOrEmpty(protocolDll) && File.Exists(protocolDll))
-        {
-            File.Copy(protocolDll, Path.Combine(targetDir, "Candied.VisionBridge.Protocol.dll"), overwrite: true);
-        }
-
-        await _gameRegistry.UpdateBridgeStatusAsync(name, true, ct).ConfigureAwait(false);
-
-        return JsonSerializer.Serialize(new
-        {
-            success = true,
-            message = $"VisionBridge installato con successo per '{name}'.",
-            installedPath = targetDir
-        }, JsonOptions);
-    }
-
-    public Task<string> LaunchGameByNameAsync(string name, CancellationToken ct) =>
-        LaunchGameByNameAsync(name, waitForLog: null, ct: ct);
-
-    public async Task<string> LaunchGameByNameAsync(
-        string name,
-        string? waitForLog = null,
-        CancellationToken ct = default)
-    {
-        if (_gameRegistry == null)
-        {
-            return JsonSerializer.Serialize(new { success = false, error = "Game registry is not configured." }, JsonOptions);
-        }
-        if (_studioClient == null)
-        {
-            return JsonSerializer.Serialize(new { success = false, error = "Studio client is not configured." }, JsonOptions);
-        }
-        if (_visionBridgeClient == null)
-        {
-            return JsonSerializer.Serialize(new { success = false, error = "VisionBridge client is not configured." }, JsonOptions);
-        }
-
-        if (string.IsNullOrWhiteSpace(name))
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = "Il nome del gioco non può essere vuoto.",
-                suggestion = "Specifica il nome di un gioco registrato o consulta la lista con 'list-games'."
-            }, JsonOptions);
-        }
-
-        // 1. Validate allowlist
-        var gameRes = await _gameRegistry.GetRegisteredGameAsync(name, ct).ConfigureAwait(false);
-        if (gameRes.IsFailure)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = gameRes.Error,
-                suggestion = $"Il gioco '{name}' non è registrato nell'allowlist. Per registrarlo eseguire: dotnet run --project src/Candied.Agent -- register-game <nome> <percorso_exe>"
-            }, JsonOptions);
-        }
-
-        var game = gameRes.Value;
-
-        // 2. Validate bridge installation (do not install automatically)
-        if (!game.HasBridgeInstalled)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = $"Il bridge VisionBridge non è installato nel gioco '{name}'.",
-                suggestion = $"esegui: dotnet run --project src/Candied.Agent -- install-bridge {name}"
-            }, JsonOptions);
-        }
-
-        // 3. Ensure Studio is running (detached independent process)
-        var ensureRes = await _studioClient.EnsureStudioRunningAsync(ct).ConfigureAwait(false);
-        if (ensureRes.IsFailure)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = $"Avvio di Candied Studio fallito: {ensureRes.Error}"
-            }, JsonOptions);
-        }
-
-        // 4. Check if game is already running (idempotence)
-        var statusRes = await _studioClient.GetStatusAsync(ct).ConfigureAwait(false);
-        if (statusRes.IsSuccess && statusRes.Value.IsRunning &&
-            string.Equals(statusRes.Value.ActiveGameName, name, StringComparison.OrdinalIgnoreCase))
-        {
-            // Already running the requested game
-        }
-        else
-        {
-            var launchRes = await _studioClient.LaunchGameAsync(name, game.ExecutablePath, ct).ConfigureAwait(false);
-            if (launchRes.IsFailure)
-            {
-                return JsonSerializer.Serialize(new
-                {
-                    success = false,
-                    error = $"Avvio del gioco fallito da Studio: {launchRes.Error}"
-                }, JsonOptions);
+                return sensorFrame;
             }
         }
 
-        // 5. Wait loop (up to 60s) for /hello + 2 consecutive stable windows:
-        //    diff < 0.25%, unchanged activeSceneName / loadedSceneCount / activeRendererCount,
-        //    and optional waitForLog marker in BepInEx/LogOutput.log.
-        const double stabilityDiffThreshold = 0.25;
-        const int requiredStableWindows = 2;
-        const int sampleIntervalMs = 1000;
+        if (_studioClient != null)
+        {
+            return await _studioClient.CaptureScreenshotAsync(ct).ConfigureAwait(false);
+        }
 
-        var bepInExLogPath = Path.Combine(game.GameRootPath, "BepInEx", "LogOutput.log");
-        var sw = Stopwatch.StartNew();
-        string lastObservedStatus = "In attesa di connessione HTTP a VisionBridge...";
-        int consecutiveStableWindows = 0;
+        return Result.Fail<VisionFrame, VisionError>(new VisionError(
+            "NO_VISION_SOURCE",
+            "Neither a Tier 2 Vision sensor nor Candied Studio is active.",
+            "Launch a game or emulator via 'game-launch(targetPath)' first."));
+    }
 
-        while (sw.ElapsedMilliseconds < 60000 && !ct.IsCancellationRequested)
+    private async Task<(string? BaseUrl, string Token)> TryResolveSensorConnectionAsync(
+        int? explicitPort,
+        string? explicitToken,
+        CancellationToken ct)
+    {
+        if (explicitPort.HasValue && explicitPort.Value > 0 && !string.IsNullOrWhiteSpace(explicitToken))
+        {
+            return ($"http://127.0.0.1:{explicitPort.Value}", explicitToken);
+        }
+
+        if (_studioClient != null)
         {
             var session = await _studioClient.GetCurrentSessionAsync(ct).ConfigureAwait(false);
-            if (session?.BridgePort == null || string.IsNullOrEmpty(session.BridgeToken))
+            if (session?.SensorPort != null && !string.IsNullOrWhiteSpace(session.SensorToken))
             {
-                consecutiveStableWindows = 0;
-                lastObservedStatus = "Studio non ha ancora pubblicato porta/token per VisionBridge.";
-                await Task.Delay(1000, ct).ConfigureAwait(false);
-                continue;
-            }
-
-            string baseUrl = $"http://127.0.0.1:{session.BridgePort.Value}";
-            string token = session.BridgeToken;
-
-            var helloRes = await _visionBridgeClient.GetHelloAsync(baseUrl, token, ct).ConfigureAwait(false);
-            if (helloRes.IsFailure)
-            {
-                consecutiveStableWindows = 0;
-                lastObservedStatus = $"Endpoint /hello non ancora pronto: {helloRes.Error.Message}";
-                await Task.Delay(1000, ct).ConfigureAwait(false);
-                continue;
-            }
-
-            lastObservedStatus = "VisionBridge connesso (/hello OK). Verifica stabilità scena e frame...";
-
-            var scene1Res = await _visionBridgeClient.GetSceneInfoAsync(baseUrl, token, ct).ConfigureAwait(false);
-            var sc1 = await _visionBridgeClient.CaptureScreenshotAsync(baseUrl, token, ct).ConfigureAwait(false);
-            if (sc1.IsFailure || sc1.Value.IsUniform)
-            {
-                consecutiveStableWindows = 0;
-                lastObservedStatus = sc1.IsFailure
-                    ? "Screenshot 1 fallito."
-                    : "Screenshot 1 non pronto (immagine uniforme / schermata di caricamento).";
-                await Task.Delay(1000, ct).ConfigureAwait(false);
-                continue;
-            }
-
-            await Task.Delay(sampleIntervalMs, ct).ConfigureAwait(false);
-
-            var scene2Res = await _visionBridgeClient.GetSceneInfoAsync(baseUrl, token, ct).ConfigureAwait(false);
-            var sc2 = await _visionBridgeClient.CaptureScreenshotAsync(baseUrl, token, ct).ConfigureAwait(false);
-            if (sc2.IsFailure || sc2.Value.IsUniform)
-            {
-                consecutiveStableWindows = 0;
-                lastObservedStatus = sc2.IsFailure
-                    ? "Screenshot 2 fallito."
-                    : "Screenshot 2 non pronto (immagine uniforme / schermata di caricamento).";
-                continue;
-            }
-
-            bool sceneStable = true;
-            string sceneSummary = "n/d";
-            int latestRendererCount = 0;
-            string latestSceneName = "Unknown";
-            if (scene1Res.IsSuccess && scene2Res.IsSuccess)
-            {
-                var s1 = scene1Res.Value;
-                var s2 = scene2Res.Value;
-                latestSceneName = s2.ActiveSceneName;
-                latestRendererCount = s2.ActiveRendererCount;
-                sceneSummary = $"scena: '{s2.ActiveSceneName}', loadedScenes: {s2.LoadedSceneCount}, renderers: {s2.ActiveRendererCount}";
-
-                bool sameScene = string.Equals(s1.ActiveSceneName, s2.ActiveSceneName, StringComparison.Ordinal);
-                bool sameLoadedCount = s1.LoadedSceneCount == s2.LoadedSceneCount;
-                bool rendererCountStable = Math.Abs(s2.ActiveRendererCount - s1.ActiveRendererCount) <= 2;
-
-                if (!sameScene || !sameLoadedCount || !rendererCountStable)
+                string url = $"http://127.0.0.1:{session.SensorPort.Value}";
+                if (_visionSensorClient != null)
                 {
-                    sceneStable = false;
-                    lastObservedStatus = $"Transizione di scena in corso ({s1.ActiveSceneName}/{s1.ActiveRendererCount} -> {s2.ActiveSceneName}/{s2.ActiveRendererCount}).";
+                    var hello = await _visionSensorClient.GetHelloAsync(url, session.SensorToken, ct).ConfigureAwait(false);
+                    if (hello.IsSuccess)
+                    {
+                        return (url, session.SensorToken);
+                    }
                 }
             }
-
-            bool logMarkerFound = true;
-            if (!string.IsNullOrWhiteSpace(waitForLog))
-            {
-                logMarkerFound = ContainsLogMarker(bepInExLogPath, waitForLog.Trim());
-                if (!logMarkerFound)
-                {
-                    lastObservedStatus = $"In attesa del marker '{waitForLog}' in BepInEx/LogOutput.log...";
-                }
-            }
-
-            double diff = PurePngDecoder.CalculateDiffPercentage(sc1.Value.PngBytes, sc2.Value.PngBytes);
-            if (diff < stabilityDiffThreshold && sceneStable && logMarkerFound)
-            {
-                consecutiveStableWindows++;
-                if (consecutiveStableWindows < requiredStableWindows)
-                {
-                    lastObservedStatus = $"Finestra stabile {consecutiveStableWindows}/{requiredStableWindows} (diff: {diff:F2}% < {stabilityDiffThreshold:F2}%, {sceneSummary}). Attesa conferma...";
-                    continue;
-                }
-
-                // Verify window visibility & clamping right before declaring success
-                var finalStatus = await _studioClient.GetStatusAsync(ct).ConfigureAwait(false);
-                var win = finalStatus.IsSuccess ? finalStatus.Value.Window : null;
-
-                if (win == null || win.Handle == 0 || !win.IsVisible || !win.IsWithinMonitor)
-                {
-                    string logPath = GetStudioLogPath();
-                    return JsonSerializer.Serialize(new
-                    {
-                        success = false,
-                        error = "Candied Studio è in esecuzione ma la finestra principale non è valida, non è visibile o è fuori dai limiti del monitor.",
-                        detail = $"MainWindowHandle: {(win?.Handle ?? 0)}, IsWindowVisible: {(win?.IsVisible ?? false)}, " +
-                                 $"WindowState: '{win?.WindowState ?? "Unknown"}', Visibility: '{win?.Visibility ?? "Unknown"}', " +
-                                 $"Rect: [Left={(win?.RectLeft ?? 0)}, Top={(win?.RectTop ?? 0)}, Right={(win?.RectRight ?? 0)}, Bottom={(win?.RectBottom ?? 0)}] " +
-                                 $"(Width={(win?.Width ?? 0)}, Height={(win?.Height ?? 0)}), IsWithinMonitor: {(win?.IsWithinMonitor ?? false)}, Responding: {(win?.IsResponding ?? false)}.",
-                        logPath = logPath,
-                        suggestion = $"Controlla i log di Studio in '{logPath}' per verificare eventuali eccezioni o problemi di visualizzazione."
-                    }, JsonOptions);
-                }
-
-                // Menu is stable and window is verified visible!
-                int gameW = sc2.Value.Width > 0 ? sc2.Value.Width : (helloRes.Value?.ScreenWidth ?? 1024);
-                int gameH = sc2.Value.Height > 0 ? sc2.Value.Height : (helloRes.Value?.ScreenHeight ?? 720);
-                int panelW = finalStatus.IsSuccess ? finalStatus.Value.PanelWidth : 0;
-                int panelH = finalStatus.IsSuccess ? finalStatus.Value.PanelHeight : 0;
-
-                return JsonSerializer.Serialize(new
-                {
-                    success = true,
-                    status = "Running",
-                    gameName = name,
-                    activeSceneName = latestSceneName,
-                    activeRendererCount = latestRendererCount,
-                    gameResolution = new
-                    {
-                        width = gameW,
-                        height = gameH
-                    },
-                    panelResolution = new
-                    {
-                        width = panelW,
-                        height = panelH
-                    },
-                    resolution = new
-                    {
-                        width = gameW,
-                        height = gameH
-                    },
-                    screenshotDimensions = new
-                    {
-                        width = sc2.Value.Width,
-                        height = sc2.Value.Height
-                    },
-                    window = new
-                    {
-                        mainWindowHandle = win.Handle,
-                        isWindowVisible = win.IsVisible,
-                        windowState = win.WindowState,
-                        visibility = win.Visibility,
-                        rect = new
-                        {
-                            left = win.RectLeft,
-                            top = win.RectTop,
-                            right = win.RectRight,
-                            bottom = win.RectBottom,
-                            width = win.Width,
-                            height = win.Height
-                        },
-                        isWithinMonitor = win.IsWithinMonitor,
-                        isResponding = win.IsResponding
-                    },
-                    waitOutcome = $"Menu stabile ({requiredStableWindows} finestre consecutive, diff: {diff:F2}% < {stabilityDiffThreshold:F2}%, {sceneSummary})",
-                    bridgePort = session.BridgePort.Value,
-                    elapsedSeconds = sw.Elapsed.TotalSeconds,
-                    nextSuggestedStep = "Usa 'screenshot' per esaminare lo stato visivo o 'click' per interagire con i pulsanti."
-                }, JsonOptions);
-            }
-
-            consecutiveStableWindows = 0;
-            if (sceneStable && logMarkerFound)
-            {
-                lastObservedStatus = $"Menu non ancora stabile (diff: {diff:F2}% >= {stabilityDiffThreshold:F2}%, {sceneSummary}).";
-            }
-            await Task.Delay(800, ct).ConfigureAwait(false);
         }
 
-        // Timeout expired
-        return JsonSerializer.Serialize(new
+        if (int.TryParse(Environment.GetEnvironmentVariable("CANDIED_PORT"), out int envPort) && envPort > 0)
         {
-            success = false,
-            error = "Timeout (60s) scaduto nell'attesa di un menu principale stabile.",
-            lastObservedStatus = lastObservedStatus,
-            bepInExLogPath = bepInExLogPath,
-            suggestion = "Verifica il file di log BepInEx indicato per analizzare errori di runtime del gioco."
-        }, JsonOptions);
+            string? envToken = Environment.GetEnvironmentVariable("CANDIED_TOKEN");
+            if (!string.IsNullOrWhiteSpace(envToken))
+            {
+                return ($"http://127.0.0.1:{envPort}", envToken);
+            }
+        }
+
+        return (null, string.Empty);
     }
 
-    private static bool ContainsLogMarker(string logFilePath, string marker)
+    private async Task<Result<TargetDescriptor, DomainError>> ResolveAndInspectAsync(
+        string targetPath,
+        string? runnerPath,
+        CancellationToken ct)
     {
-        try
+        if (_inspectTargetUseCase != null)
         {
-            if (!File.Exists(logFilePath)) return false;
-            using var stream = new FileStream(logFilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-            using var reader = new StreamReader(stream);
-            string content = reader.ReadToEnd();
-            return content.Contains(marker, StringComparison.OrdinalIgnoreCase);
+            return await _inspectTargetUseCase.ExecuteAsync(targetPath, runnerPath, _storageLayout, ct).ConfigureAwait(false);
         }
-        catch
+
+        if (_platformRegistry != null)
         {
-            return false;
+            var res = await _platformRegistry.InspectTargetAsync(targetPath, runnerPath, _storageLayout, ct).ConfigureAwait(false);
+            return res.IsSuccess
+                ? Result.Ok<TargetDescriptor, DomainError>(res.Value)
+                : Result.Fail<TargetDescriptor, DomainError>(res.Error);
         }
+
+        return Result.Fail<TargetDescriptor, DomainError>(new DetectionError("No target inspector or platform registry configured."));
     }
 
-    public async Task<string> CloseGameAsync(CancellationToken ct = default)
+    private async Task<Result<(string TargetPath, string? RunnerPath), DomainError>> ResolveTargetLocationAsync(
+        string? explicitTargetPath,
+        string? explicitRunnerPath,
+        CancellationToken ct)
     {
-        if (_studioClient == null)
+        if (!string.IsNullOrWhiteSpace(explicitTargetPath))
         {
-            return JsonSerializer.Serialize(new { success = false, error = "Studio client is not configured." }, JsonOptions);
+            _activeTargetPath = explicitTargetPath;
+            _activeRunnerPath = explicitRunnerPath;
+            return Result.Ok<(string, string?), DomainError>((explicitTargetPath, explicitRunnerPath));
         }
 
-        var closeRes = await _studioClient.CloseGameAsync(ct).ConfigureAwait(false);
-        if (closeRes.IsFailure)
+        if (!string.IsNullOrWhiteSpace(_activeTargetPath))
         {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = closeRes.Error
-            }, JsonOptions);
+            return Result.Ok<(string, string?), DomainError>((_activeTargetPath, explicitRunnerPath ?? _activeRunnerPath));
         }
 
-        return JsonSerializer.Serialize(new
+        if (_studioClient != null)
         {
-            success = true,
-            status = "Closed",
-            message = "Gioco e sessione chiusi con successo."
-        }, JsonOptions);
-    }
-
-    private string? FindBridgeBinary(string fileName)
-    {
-        string[] baseRoots = [_storageLayout.WorkspaceRoot, ResolveDefaultWorkspaceRoot(), Directory.GetCurrentDirectory()];
-        string[] relativeSubPaths = [
-            Path.Combine("src", "Candied.VisionBridge", "bin", "Release", "net472"),
-            Path.Combine("src", "Candied.VisionBridge", "bin", "Debug", "net472"),
-            Path.Combine("src", "Candied.VisionBridge", "bin", "Release", "net35"),
-            Path.Combine("src", "Candied.VisionBridge", "bin", "Debug", "net35"),
-            Path.Combine("src", "Candied.VisionBridge.Protocol", "bin", "Release", "net472"),
-            Path.Combine("src", "Candied.VisionBridge.Protocol", "bin", "Debug", "net472"),
-            Path.Combine("src", "Candied.VisionBridge.Protocol", "bin", "Release", "net35"),
-            Path.Combine("src", "Candied.VisionBridge.Protocol", "bin", "Debug", "net35"),
-            Path.Combine("src", "Candied.VisionBridge.Protocol", "bin", "Release", "netstandard2.0"),
-            Path.Combine("src", "Candied.VisionBridge.Protocol", "bin", "Debug", "netstandard2.0")
-        ];
-
-        foreach (var root in baseRoots.Distinct(StringComparer.OrdinalIgnoreCase))
-        {
-            if (string.IsNullOrWhiteSpace(root)) continue;
-            foreach (var sub in relativeSubPaths)
+            var st = await _studioClient.GetStatusAsync(ct).ConfigureAwait(false);
+            if (st.IsSuccess && !string.IsNullOrWhiteSpace(st.Value.ActiveTargetPath))
             {
-                var candidate = Path.Combine(root, sub, fileName);
-                if (File.Exists(candidate)) return candidate;
+                _activeTargetPath = st.Value.ActiveTargetPath;
+                _activeRunnerPath = st.Value.ActiveRunnerPath;
+                return Result.Ok<(string, string?), DomainError>((_activeTargetPath, _activeRunnerPath));
             }
         }
 
-        return null;
+        if (_recentTargetsStore != null)
+        {
+            var recent = await _recentTargetsStore.ListRecentAsync(ct).ConfigureAwait(false);
+            if (recent.Count == 1)
+            {
+                _activeTargetPath = recent[0].TargetPath;
+                _activeRunnerPath = recent[0].RunnerPath;
+                return Result.Ok<(string, string?), DomainError>((_activeTargetPath, _activeRunnerPath));
+            }
+        }
+
+        return Result.Fail<(string, string?), DomainError>(
+            new DetectionError("No active target session. Provide 'targetPath' (and optional 'runnerPath')."));
+    }
+
+    private async Task<string?> ResolveDatabasePathAsync(
+        string? targetPath,
+        string? runnerPath,
+        CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(targetPath))
+        {
+            if (targetPath.EndsWith(".db", StringComparison.OrdinalIgnoreCase) && File.Exists(targetPath))
+            {
+                return targetPath;
+            }
+
+            var inspected = await ResolveAndInspectAsync(targetPath, runnerPath, ct).ConfigureAwait(false);
+            if (inspected.IsSuccess)
+            {
+                SetActiveTarget(inspected.Value);
+                return _storageLayout.GetDatabasePath(inspected.Value.Name);
+            }
+        }
+
+        return _activeDatabasePath;
+    }
+
+    private async Task<string> ResolveTargetNameForControlsAsync(
+        string? targetPath,
+        string? runnerPath,
+        CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(targetPath))
+        {
+            var inspected = await ResolveAndInspectAsync(targetPath, runnerPath, ct).ConfigureAwait(false);
+            if (inspected.IsSuccess)
+            {
+                SetActiveTarget(inspected.Value);
+                return inspected.Value.Name;
+            }
+
+            return Path.GetFileNameWithoutExtension(targetPath.TrimEnd('/', '\\'));
+        }
+
+        if (_activeTarget != null)
+        {
+            return _activeTarget.Name;
+        }
+
+        if (_studioClient != null)
+        {
+            var st = await _studioClient.GetStatusAsync(ct).ConfigureAwait(false);
+            if (st.IsSuccess && !string.IsNullOrWhiteSpace(st.Value.ActiveTargetName))
+            {
+                return st.Value.ActiveTargetName;
+            }
+        }
+
+        return "Default";
+    }
+
+    private void SetActiveTarget(TargetDescriptor target)
+    {
+        _activeTarget = target;
+        _activeTargetPath = target.TargetPath;
+        _activeRunnerPath = target.RunnerPath;
+        _activeDatabasePath = _storageLayout.GetDatabasePath(target.Name);
+    }
+
+    private string ResolveScreenshotSavePath(string? savePath, string? targetPath, string prefix = "screenshot")
+    {
+        if (!string.IsNullOrWhiteSpace(savePath))
+        {
+            return ResolveWorkspacePath(savePath);
+        }
+
+        string targetName = _activeTarget?.Name
+            ?? (!string.IsNullOrWhiteSpace(targetPath) ? Path.GetFileNameWithoutExtension(targetPath.TrimEnd('/', '\\')) : "Default");
+        string dir = _storageLayout.GetScreenshotsDir(targetName);
+        return Path.Combine(dir, $"{prefix}_{DateTime.UtcNow:yyyyMMdd_HHmmssfff}.png");
+    }
+
+    private string? ResolveExtractedSourcePath(string? targetName, string? moduleName, string? relativeSourcePath)
+    {
+        if (string.IsNullOrWhiteSpace(targetName) ||
+            string.IsNullOrWhiteSpace(moduleName) ||
+            string.IsNullOrWhiteSpace(relativeSourcePath))
+        {
+            return null;
+        }
+
+        string normalizedRel = relativeSourcePath
+            .Replace('/', Path.DirectorySeparatorChar)
+            .Replace('\\', Path.DirectorySeparatorChar);
+        return Path.Combine(_storageLayout.GetExtractedCodeDir(targetName, moduleName), normalizedRel);
+    }
+
+    private string ResolveProjectPath(string projectFilePath)
+    {
+        if (string.IsNullOrWhiteSpace(projectFilePath) || Path.IsPathRooted(projectFilePath))
+        {
+            return projectFilePath;
+        }
+
+        string candidate = ResolveWorkspacePath(projectFilePath);
+        return File.Exists(candidate) || !File.Exists(Path.GetFullPath(projectFilePath))
+            ? candidate
+            : Path.GetFullPath(projectFilePath);
+    }
+
+    private string ResolveWorkspacePath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return _storageLayout.WorkspaceRoot;
+        }
+
+        string trimmed = path.Trim();
+        return Path.IsPathRooted(trimmed)
+            ? Path.GetFullPath(trimmed)
+            : Path.GetFullPath(Path.Combine(_storageLayout.WorkspaceRoot, trimmed));
     }
 
     public static string ResolveDefaultWorkspaceRoot(string? currentDirectory = null, string? baseDirectory = null)
     {
-        var envRoot = Environment.GetEnvironmentVariable("CANDIED_WORKSPACE_ROOT");
+        string? envRoot = Environment.GetEnvironmentVariable("CANDIED_WORKSPACE_ROOT");
         if (!string.IsNullOrWhiteSpace(envRoot) && Directory.Exists(envRoot))
         {
             return Path.GetFullPath(envRoot);
         }
 
-        var cwd = !string.IsNullOrWhiteSpace(currentDirectory) ? currentDirectory : Directory.GetCurrentDirectory();
-        var appBase = !string.IsNullOrWhiteSpace(baseDirectory) ? baseDirectory : AppContext.BaseDirectory;
+        string cwd = !string.IsNullOrWhiteSpace(currentDirectory) ? currentDirectory : Directory.GetCurrentDirectory();
+        string appBase = !string.IsNullOrWhiteSpace(baseDirectory) ? baseDirectory : AppContext.BaseDirectory;
 
-        var repoFromCwd = FindAncestorWithRepoMarker(cwd);
-        if (repoFromCwd != null)
-        {
-            return repoFromCwd;
-        }
-
-        var repoFromBase = FindAncestorWithRepoMarker(appBase);
-        if (repoFromBase != null)
-        {
-            return repoFromBase;
-        }
-
-        return Path.GetFullPath(cwd);
+        return FindAncestorWithRepoMarker(cwd)
+            ?? FindAncestorWithRepoMarker(appBase)
+            ?? Path.GetFullPath(cwd);
     }
 
     private static string? FindAncestorWithRepoMarker(string? startPath)
@@ -2548,109 +2031,70 @@ public sealed class AgentWorkbenchService
         }
         catch
         {
-            // Ignore traversal errors
         }
 
         return null;
     }
 
-    private string ResolveWorkspacePath(string path)
+    private static SymbolQuery BuildSymbolQuery(
+        string searchTerm,
+        string? kind,
+        string? namespacePrefix,
+        string? moduleFilter,
+        int limit)
     {
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return _storageLayout.WorkspaceRoot;
-        }
+        int clampedLimit = Math.Clamp(limit <= 0 ? 25 : limit, 1, 200);
+        string normalized = (kind ?? "all").Trim().ToLowerInvariant();
 
-        var trimmed = path.Trim();
-        if (Path.IsPathRooted(trimmed))
+        return normalized switch
         {
-            return Path.GetFullPath(trimmed);
-        }
-
-        return Path.GetFullPath(Path.Combine(_storageLayout.WorkspaceRoot, trimmed));
+            "types" or "type" => new SymbolQuery(searchTerm, SymbolKindFilter.TypeOnly, namespacePrefix, clampedLimit, ModuleFilter: moduleFilter),
+            "members" or "member" => new SymbolQuery(searchTerm, SymbolKindFilter.MemberOnly, namespacePrefix, clampedLimit, ModuleFilter: moduleFilter),
+            "class" => new SymbolQuery(searchTerm, SymbolKindFilter.TypeOnly, namespacePrefix, clampedLimit, ExactKind: SymbolKind.Class, ModuleFilter: moduleFilter),
+            "struct" => new SymbolQuery(searchTerm, SymbolKindFilter.TypeOnly, namespacePrefix, clampedLimit, ExactKind: SymbolKind.Struct, ModuleFilter: moduleFilter),
+            "interface" => new SymbolQuery(searchTerm, SymbolKindFilter.TypeOnly, namespacePrefix, clampedLimit, ExactKind: SymbolKind.Interface, ModuleFilter: moduleFilter),
+            "enum" => new SymbolQuery(searchTerm, SymbolKindFilter.TypeOnly, namespacePrefix, clampedLimit, EnumOnly: true, ModuleFilter: moduleFilter),
+            "method" => new SymbolQuery(searchTerm, SymbolKindFilter.MemberOnly, namespacePrefix, clampedLimit, ExactKind: SymbolKind.Method, ModuleFilter: moduleFilter),
+            "field" => new SymbolQuery(searchTerm, SymbolKindFilter.MemberOnly, namespacePrefix, clampedLimit, ExactKind: SymbolKind.Field, ModuleFilter: moduleFilter),
+            "property" => new SymbolQuery(searchTerm, SymbolKindFilter.MemberOnly, namespacePrefix, clampedLimit, ExactKind: SymbolKind.Property, ModuleFilter: moduleFilter),
+            "event" => new SymbolQuery(searchTerm, SymbolKindFilter.MemberOnly, namespacePrefix, clampedLimit, ExactKind: SymbolKind.Event, ModuleFilter: moduleFilter),
+            _ => new SymbolQuery(searchTerm, SymbolKindFilter.All, namespacePrefix, clampedLimit, ModuleFilter: moduleFilter)
+        };
     }
 
-    private (string? BaseUrl, string Token, string? ErrorMessage, string? ErrorDetail, string? Suggestion) ResolveBridgeConnection(int? customPort = null, string? customToken = null)
+    private static bool ContainsLogMarker(string logFilePath, string marker)
     {
-        int port = customPort
-            ?? (int.TryParse(Environment.GetEnvironmentVariable("CANDIED_PORT"), out var p) ? p : 0);
-        string token = !string.IsNullOrWhiteSpace(customToken)
-            ? customToken
-            : (Environment.GetEnvironmentVariable("CANDIED_TOKEN") ?? string.Empty);
-
-        if (port <= 0 && _studioClient != null)
+        try
         {
-            try
+            if (!File.Exists(logFilePath))
             {
-                var session = _studioClient.GetCurrentSessionAsync().GetAwaiter().GetResult();
-                if (session?.BridgePort != null && !string.IsNullOrWhiteSpace(session.BridgeToken))
-                {
-                    port = session.BridgePort.Value;
-                    token = session.BridgeToken;
-                }
+                return false;
             }
-            catch { }
-        }
 
-        if (port <= 0)
+            using var stream = new FileStream(logFilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var reader = new StreamReader(stream);
+            string content = reader.ReadToEnd();
+            return content.Contains(marker, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
         {
-            return (null, token, "gioco non connesso", "Nessuna porta specificata, CANDIED_PORT non impostata e nessuna sessione Studio attiva.", "Avvia il gioco con 'game-launch' o specifica i parametri port e token.");
+            return false;
         }
-
-        if (string.IsNullOrWhiteSpace(token))
-        {
-            return (null, token, "gioco non connesso", "Token di sicurezza mancante (CANDIED_TOKEN non impostato).", "Verifica che il gioco sia stato avviato tramite Studio o fornisci il parametro token.");
-        }
-
-        return ($"http://127.0.0.1:{port}", token, null, null, null);
     }
 
-    private static string SerializeMissingClientError()
-    {
-        return JsonSerializer.Serialize(new
+    private static string SerializeDomainError(DomainError error) =>
+        JsonSerializer.Serialize(new
         {
             success = false,
-            error = "IVisionBridgeClient is not configured in this environment.",
-            detail = "Missing client dependency."
+            error = error.Message,
+            detail = error.Detail
         }, JsonOptions);
-    }
 
-    private static string SerializeConnectionError(string error, string? detail, string? suggestion)
-    {
-        return JsonSerializer.Serialize(new
+    private static string SerializeError(string message, string? suggestion = null) =>
+        JsonSerializer.Serialize(new
         {
             success = false,
-            error = error,
-            detail = detail ?? string.Empty,
-            suggestion = suggestion ?? string.Empty
+            error = message,
+            suggestion
         }, JsonOptions);
-    }
-
-    private static string GetStudioLogPath()
-    {
-        string? overrideDir = Environment.GetEnvironmentVariable("CANDIED_USER_CONFIG_DIR");
-        string baseDir;
-        if (!string.IsNullOrWhiteSpace(overrideDir))
-        {
-            baseDir = overrideDir;
-        }
-        else
-        {
-            string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-            if (string.IsNullOrWhiteSpace(appData))
-            {
-                appData = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config");
-            }
-            baseDir = Path.Combine(appData, "Candied");
-        }
-        return Path.Combine(baseDir, "logs", "studio.log");
-    }
-
-    private async Task<string> ResolveGameNameAsync(string gameDirectory, CancellationToken ct)
-    {
-        var detectResult = await _gameDetector.DetectGameAsync(gameDirectory, ct).ConfigureAwait(false);
-        return detectResult.IsSuccess
-            ? detectResult.Value.GameName
-            : Path.GetFileName(gameDirectory.TrimEnd('/', '\\'));
-    }
 }

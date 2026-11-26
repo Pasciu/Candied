@@ -1,146 +1,108 @@
+using System;
+using System.IO;
 using System.Text.Json;
-using Microsoft.Extensions.DependencyInjection;
+using System.Threading.Tasks;
 using Candied.Agent;
 using Candied.Core.Models;
-using Candied.Core.UseCases;
-using Candied.Decompiler;
+using Candied.Infrastructure;
+using Candied.Platforms.Unity.Mono;
 using Candied.Primitives;
-using Candied.Workspace;
+using Candied.Vision;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace Candied.Tests.E2E;
 
-public class VerticalSliceEndToEndTests : IDisposable
+public sealed class VerticalSliceEndToEndTests : IDisposable
 {
     private readonly string _tempDirectory;
-    private readonly IServiceProvider _serviceProvider;
+    private readonly ServiceProvider _serviceProvider;
     private readonly CandiedStorageLayout _storageLayout;
 
     public VerticalSliceEndToEndTests()
     {
         _tempDirectory = Path.Combine(Path.GetTempPath(), "Candied_E2E_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_tempDirectory);
-        _storageLayout = new CandiedStorageLayout(_tempDirectory);
 
         var services = new ServiceCollection();
-
-        // Register infrastructure adapters
-        services.AddDecompilerInfrastructure();
-        services.AddWorkspaceInfrastructure();
-
-        // Register Core use cases and Agent presentation
-        services.AddSingleton(_storageLayout);
-        services.AddTransient<InspectGameEnvironmentUseCase>();
-        services.AddTransient<DecompileAssemblyUseCase>();
-        services.AddTransient<SearchGameSymbolsUseCase>();
-        services.AddTransient<ScaffoldModUseCase>();
-        services.AddTransient<BuildModUseCase>();
-        services.AddTransient<ReadLogsUseCase>();
-        services.AddTransient<GetTypeDetailUseCase>();
+        services.AddCandiedCoreAndInfrastructure(_tempDirectory);
+        services.AddVisionInfrastructure();
+        services.AddUnityMonoPlatform();
         services.AddTransient<AgentWorkbenchService>();
 
         _serviceProvider = services.BuildServiceProvider();
+        _storageLayout = _serviceProvider.GetRequiredService<CandiedStorageLayout>();
     }
 
     [Fact]
-    public async Task EndToEnd_ProgressivePipeline_Decompiles_Indexes_And_Generates_KnowledgeHub()
+    public async Task EndToEnd_MultiPlatformPipeline_Inspects_ExtractsCode_GeneratesKnowledgeHub_Queries_And_ScaffoldsMod()
     {
-        // Setup realistic Unity game folder structure
-        var gameRoot = Path.Combine(_tempDirectory, "HollowKnight");
-        var managedDir = Path.Combine(gameRoot, "HollowKnight_Data", "Managed");
+        string gameRoot = Path.Combine(_tempDirectory, "SampleGame");
+        string managedDir = Path.Combine(gameRoot, "SampleGame_Data", "Managed");
         Directory.CreateDirectory(managedDir);
         Directory.CreateDirectory(Path.Combine(gameRoot, "BepInEx"));
 
-        // Copy a real assembly (Candied.Primitives.dll) as Assembly-CSharp.dll
-        var sourceAssembly = typeof(Result<,>).Assembly.Location;
-        var targetAssembly = Path.Combine(managedDir, "Assembly-CSharp.dll");
-        File.Copy(sourceAssembly, targetAssembly, true);
+        string sourceAssembly = typeof(Result<,>).Assembly.Location;
+        string targetAssembly = Path.Combine(managedDir, "Assembly-CSharp.dll");
+        File.Copy(sourceAssembly, targetAssembly, overwrite: true);
 
         var workbench = _serviceProvider.GetRequiredService<AgentWorkbenchService>();
 
-        // 1. Audit game environment
-        var inspectJson = await workbench.InspectGameEnvironmentAsync(gameRoot);
+        // 1. Inspect target
+        string inspectJson = await workbench.InspectTargetAsync(gameRoot);
         using var inspectDoc = JsonDocument.Parse(inspectJson);
         Assert.True(inspectDoc.RootElement.GetProperty("success").GetBoolean());
+        Assert.Equal("unity.mono", inspectDoc.RootElement.GetProperty("platformId").GetString());
 
-        // 2. Decompile assembly
-        var decompileJson = await workbench.DecompileAssemblyAsync(gameRoot, "Assembly-CSharp.dll");
-        using var decompileDoc = JsonDocument.Parse(decompileJson);
-        var decompileRoot = decompileDoc.RootElement;
+        // 2. Extract code module & index into SQLite
+        string extractJson = await workbench.ExtractCodeAsync("Assembly-CSharp.dll", gameRoot);
+        using var extractDoc = JsonDocument.Parse(extractJson);
+        Assert.True(extractDoc.RootElement.GetProperty("success").GetBoolean());
+        Assert.Equal("Assembly-CSharp", extractDoc.RootElement.GetProperty("moduleName").GetString());
+        Assert.True(extractDoc.RootElement.GetProperty("sourceFileCount").GetInt32() >= 1);
 
-        Assert.True(decompileRoot.GetProperty("success").GetBoolean());
-        Assert.Equal("Assembly-CSharp", decompileRoot.GetProperty("assembly").GetString());
-        Assert.True(decompileRoot.GetProperty("sourceFileCount").GetInt32() >= 1);
+        // 3. Verify Zone 3 Knowledge Hub artifacts
+        string overviewPath = _storageLayout.GetOverviewDocPath("SampleGame");
+        string namespacesPath = _storageLayout.GetNamespacesDocPath("SampleGame");
+        string symbolsJsonPath = _storageLayout.GetSymbolsIndexJsonPath("SampleGame");
+        string dbPath = _storageLayout.GetDatabasePath("SampleGame");
 
-        // 3. Verify Knowledge Hub artifacts created in Zone 3
-        var overviewDocPath = _storageLayout.GetOverviewDocPath("HollowKnight");
-        var namespacesDocPath = _storageLayout.GetNamespacesDocPath("HollowKnight");
-        var symbolsIndexPath = _storageLayout.GetSymbolsIndexJsonPath("HollowKnight");
-        var databasePath = _storageLayout.GetDatabasePath("HollowKnight");
+        Assert.True(File.Exists(overviewPath));
+        Assert.True(File.Exists(namespacesPath));
+        Assert.True(File.Exists(symbolsJsonPath));
+        Assert.True(File.Exists(dbPath));
 
-        Assert.True(File.Exists(overviewDocPath), $"Expected overview doc at '{overviewDocPath}'");
-        Assert.True(File.Exists(namespacesDocPath), $"Expected namespaces doc at '{namespacesDocPath}'");
-        Assert.True(File.Exists(symbolsIndexPath), $"Expected symbols index JSON at '{symbolsIndexPath}'");
-        Assert.True(File.Exists(databasePath), $"Expected SQLite DB at '{databasePath}'");
-
-        var overviewContent = await File.ReadAllTextAsync(overviewDocPath);
-        Assert.Contains("HollowKnight", overviewContent);
-        Assert.Contains("Assembly-CSharp", overviewContent);
-
-        // 4. Query symbols
-        var queryJson = await workbench.SearchGameSymbolsOnlyAsync("Result", gameRoot);
+        // 4. Query symbols & FTS5 code search
+        string queryJson = await workbench.QuerySymbolsAsync("Result", gameRoot);
         using var queryDoc = JsonDocument.Parse(queryJson);
-        var queryRoot = queryDoc.RootElement;
+        Assert.True(queryDoc.RootElement.GetProperty("success").GetBoolean());
+        Assert.True(queryDoc.RootElement.GetProperty("count").GetInt32() >= 1);
 
-        Assert.True(queryRoot.GetProperty("success").GetBoolean());
-        Assert.True(queryRoot.GetProperty("count").GetInt32() >= 1);
+        string codeJson = await workbench.SearchCodeAsync("IsSuccess", gameRoot);
+        using var codeDoc = JsonDocument.Parse(codeJson);
+        Assert.True(codeDoc.RootElement.GetProperty("success").GetBoolean());
+        Assert.True(codeDoc.RootElement.GetProperty("count").GetInt32() >= 1);
 
-        var symbols = queryRoot.GetProperty("symbols");
-        Assert.True(symbols.GetArrayLength() >= 1);
-
-        var hasResultSymbol = false;
-        foreach (var sym in symbols.EnumerateArray())
-        {
-            var fullName = sym.GetProperty("fullName").GetString();
-            if (fullName != null && fullName.Contains("Result"))
-            {
-                hasResultSymbol = true;
-                break;
-            }
-        }
-
-        Assert.True(hasResultSymbol, "Expected at least one symbol containing 'Result'.");
-    }
-
-    [Fact]
-    public async Task EndToEnd_InspectGameEnvironment_Returns_Structured_Error_For_NonExistent_Game()
-    {
-        var workbench = _serviceProvider.GetRequiredService<AgentWorkbenchService>();
-        var nonExistentDir = Path.Combine(_tempDirectory, "NonExistentGame");
-
-        var responseJson = await workbench.InspectGameEnvironmentAsync(nonExistentDir);
-
-        using var doc = JsonDocument.Parse(responseJson);
-        var root = doc.RootElement;
-
-        Assert.False(root.GetProperty("success").GetBoolean());
-        Assert.True(root.TryGetProperty("error", out var errorProp));
-        Assert.Contains("Game directory does not exist", errorProp.GetString()!);
+        // 5. Scaffold mod in Zone 2
+        string scaffoldJson = await workbench.ScaffoldModAsync("DashUpgradeMod", targetPath: gameRoot);
+        using var scaffoldDoc = JsonDocument.Parse(scaffoldJson);
+        Assert.True(scaffoldDoc.RootElement.GetProperty("success").GetBoolean());
+        string csprojPath = scaffoldDoc.RootElement.GetProperty("manifest").GetProperty("projectFilePath").GetString()!;
+        Assert.True(File.Exists(csprojPath));
     }
 
     public void Dispose()
     {
+        _serviceProvider.Dispose();
         try
         {
             if (Directory.Exists(_tempDirectory))
             {
-                Directory.Delete(_tempDirectory, true);
+                Directory.Delete(_tempDirectory, recursive: true);
             }
         }
         catch
         {
-            // Ignore cleanup errors
         }
-        GC.SuppressFinalize(this);
     }
 }

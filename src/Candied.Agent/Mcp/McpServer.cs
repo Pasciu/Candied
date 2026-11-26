@@ -1,6 +1,15 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading;
+using System.Threading.Tasks;
 using Candied.Core.Models;
+using Candied.Vision.Controls;
+using Candied.Vision.Protocol;
 
 namespace Candied.Agent.Mcp;
 
@@ -17,14 +26,14 @@ internal sealed class McpServer
 
     public McpServer(AgentWorkbenchService workbench)
     {
-        _workbench = workbench;
+        _workbench = workbench ?? throw new ArgumentNullException(nameof(workbench));
     }
 
     public async Task RunAsync(TextReader input, TextWriter output, CancellationToken ct = default)
     {
         string? line;
         var activeTasks = new List<Task>();
-        var writeLock = new SemaphoreSlim(1, 1);
+        using var writeLock = new SemaphoreSlim(1, 1);
 
         while (!ct.IsCancellationRequested && (line = await input.ReadLineAsync(ct).ConfigureAwait(false)) != null)
         {
@@ -33,10 +42,10 @@ internal sealed class McpServer
                 continue;
             }
 
-            var currentLine = line;
+            string currentLine = line;
             var task = Task.Run(async () =>
             {
-                var responseJson = await HandleMessageAsync(currentLine, ct).ConfigureAwait(false);
+                string? responseJson = await HandleMessageAsync(currentLine, ct).ConfigureAwait(false);
                 if (responseJson != null)
                 {
                     await writeLock.WaitAsync(ct).ConfigureAwait(false);
@@ -94,7 +103,6 @@ internal sealed class McpServer
             return JsonSerializer.Serialize(invalidRequest, JsonOptions);
         }
 
-        // Notification: client initialized acknowledgement
         if (request.Method.Equals("notifications/initialized", StringComparison.OrdinalIgnoreCase))
         {
             return null;
@@ -121,8 +129,24 @@ internal sealed class McpServer
         }
     }
 
-    private static string HandleInitialize(JsonRpcRequest request)
+    private string HandleInitialize(JsonRpcRequest request)
     {
+        var sb = new StringBuilder();
+        sb.AppendLine("Candied is a multi-platform autonomous reverse-engineering, live vision, and modding workbench for PC and emulated games.");
+        sb.AppendLine("Standard Modding & Live Perception Pipeline:");
+        sb.AppendLine("1. Call 'inspect(targetPath, runnerPath?)' to detect platform capabilities, mod loader status, and code modules.");
+        sb.AppendLine("2. If EnvironmentSetup is supported and modLoader.isInstalled is false, call 'setup()'.");
+        sb.AppendLine("3. Call 'extract-code(moduleName)' on the primary CoreLogic module, then query symbols/code via 'query', 'search-code', and 'type'.");
+        sb.AppendLine("4. Launch any game or emulator directly in Candied Studio via 'game-launch(targetPath, runnerPath?)' — Tier 1 BaseWindow screenshot & input work immediately; Tier 2 SensorBridge connects automatically when a sensor is present.");
+        sb.AppendLine("5. Interact via 'screenshot', 'send-input' (pointer, keyboard, gamepad), or semantic 'trigger-action' / 'get-controls' / 'set-controls'.");
+        sb.AppendLine("6. Call 'scaffold(modName)', author your mod code in 'mods/<ModName>/', compile via 'build(projectFilePath)', and verify via 'logs' and 'screenshot'.");
+
+        foreach (var guide in _workbench.GetPlatformGuides())
+        {
+            sb.AppendLine();
+            sb.AppendLine(guide.MarkdownContent);
+        }
+
         var result = new
         {
             protocolVersion = "2024-11-05",
@@ -133,19 +157,9 @@ internal sealed class McpServer
             serverInfo = new
             {
                 name = "Candied-workbench",
-                version = "1.0.0"
+                version = "2.0.0"
             },
-            instructions = "Candied is an autonomous reverse-engineering and modding workbench for Unity Mono games.\n" +
-                "When requested to create or verify a mod, follow this strict pipeline:\n" +
-                "Step 1: Call 'inspect(gameDirectory)' to audit engine, architecture, BepInEx presence, and discovered assemblies.\n" +
-                "Step 2: If 'bepInEx.isInstalled' is false or missing, call 'setup(gameDirectory)' to provision the mod loader.\n" +
-                "Step 3: Call 'decompile(assemblyName)' targeting the primary CoreGame assembly (e.g. 'Assembly-CSharp' or '<GameName>.Scripts').\n" +
-                "Step 4: Use 'query' and 'type' to find target classes, methods, and fields to patch.\n" +
-                "Optional Step 4.5: For live runtime inspection, call 'launch', 'capabilities', 'screenshot', and 'inspect-scene-objects' where applicable.\n" +
-                "Step 5: Call 'scaffold(...)'. Set 'includeAssetPipeline: true' ONLY if the mod requires custom sprites/textures; otherwise leave it false for code/logic mods.\n" +
-                "Step 6: Write Harmony patches in the generated 'mods/<ModName>/Patches/' folder.\n" +
-                "Step 7: Call 'build(projectFilePath)'. If compilation fails, inspect structured diagnostics, fix code, and rebuild until successful.\n" +
-                "Step 8: Call 'logs(logFilePath)' to inspect runtime BepInEx logs and verify patch execution."
+            instructions = sb.ToString()
         };
 
         var response = JsonRpcResponse.Success(request.Id, result);
@@ -158,9 +172,9 @@ internal sealed class McpServer
         return JsonSerializer.Serialize(response, JsonOptions);
     }
 
-    private static string HandleToolsList(JsonRpcRequest request)
+    private string HandleToolsList(JsonRpcRequest request)
     {
-        var tools = McpToolDefinitions.GetAllTools();
+        var tools = McpToolDefinitions.GetAllTools(_workbench.GetPlatformTools());
         var response = JsonRpcResponse.Success(request.Id, tools);
         return JsonSerializer.Serialize(response, JsonOptions);
     }
@@ -186,154 +200,42 @@ internal sealed class McpServer
             return JsonSerializer.Serialize(invalidParams, JsonOptions);
         }
 
-        var toolName = nameProp.GetString()!;
-        var arguments = paramsObj.TryGetProperty("arguments", out var argsProp) && argsProp.ValueKind == JsonValueKind.Object
+        string toolName = nameProp.GetString()!;
+        JsonElement arguments = paramsObj.TryGetProperty("arguments", out var argsProp) && argsProp.ValueKind == JsonValueKind.Object
             ? argsProp
             : default;
 
-        string toolOutputJson;
-
-        switch (toolName)
+        string? toolOutputJson = await DispatchCoreToolAsync(toolName, arguments, ct).ConfigureAwait(false);
+        if (toolOutputJson == null)
         {
-            case "inspect":
-                toolOutputJson = await ExecuteInspectGameEnvironmentToolAsync(arguments, ct).ConfigureAwait(false);
-                break;
+            bool isPlatformTool = _workbench.GetPlatformTools()
+                .Any(t => string.Equals(t.Name, toolName, StringComparison.OrdinalIgnoreCase));
 
-            case "setup":
-                toolOutputJson = await ExecuteSetupGameEnvironmentToolAsync(arguments, ct).ConfigureAwait(false);
-                break;
-
-            case "rollback":
-                toolOutputJson = await ExecuteRollbackGameEnvironmentToolAsync(arguments, ct).ConfigureAwait(false);
-                break;
-
-            case "decompile":
-                toolOutputJson = await ExecuteDecompileAssemblyToolAsync(arguments, ct).ConfigureAwait(false);
-                break;
-
-            case "query":
-                toolOutputJson = await ExecuteSearchGameSymbolsToolAsync(arguments, ct).ConfigureAwait(false);
-                break;
-
-            case "search-code":
-            case "search_code":
-                toolOutputJson = await ExecuteSearchGameCodeToolAsync(arguments, ct).ConfigureAwait(false);
-                break;
-
-            case "notes":
-                toolOutputJson = await ExecuteSaveResearchNotesToolAsync(arguments, ct).ConfigureAwait(false);
-                break;
-
-            case "type":
-                toolOutputJson = await ExecuteGetTypeDetailToolAsync(arguments, ct).ConfigureAwait(false);
-                break;
-
-            case "scaffold":
-                toolOutputJson = await ExecuteScaffoldModToolAsync(arguments, ct).ConfigureAwait(false);
-                break;
-
-            case "add-reference":
-            case "add_reference":
-                toolOutputJson = await ExecuteAddProjectReferenceToolAsync(arguments, ct).ConfigureAwait(false);
-                break;
-
-            case "build":
-                toolOutputJson = await ExecuteBuildModToolAsync(arguments, ct).ConfigureAwait(false);
-                break;
-
-            case "logs":
-                toolOutputJson = await ExecuteReadLogsToolAsync(arguments, ct).ConfigureAwait(false);
-                break;
-
-            case "status":
-                toolOutputJson = await ExecuteGameProcessStatusToolAsync(arguments, ct).ConfigureAwait(false);
-                break;
-
-            case "launch":
-                toolOutputJson = await ExecuteLaunchGameToolAsync(arguments, ct).ConfigureAwait(false);
-                break;
-
-            case "stop":
-                toolOutputJson = await ExecuteStopGameToolAsync(arguments, ct).ConfigureAwait(false);
-                break;
-
-            case "index-assets":
-                toolOutputJson = await ExecuteIndexGameAssetsToolAsync(arguments, ct).ConfigureAwait(false);
-                break;
-
-            case "discover-assets":
-                toolOutputJson = await ExecuteDiscoverGameAssetsToolAsync(arguments, ct).ConfigureAwait(false);
-                break;
-
-            case "extract-assets":
-                toolOutputJson = await ExecuteExtractGameAssetsToolAsync(arguments, ct).ConfigureAwait(false);
-                break;
-
-            case "capabilities":
-                toolOutputJson = await ExecuteGameCapabilitiesToolAsync(arguments, ct).ConfigureAwait(false);
-                break;
-
-            case "screenshot":
-                toolOutputJson = await ExecuteGameScreenshotToolAsync(arguments, ct).ConfigureAwait(false);
-                break;
-
-            case "click":
-                toolOutputJson = await ExecuteGameClickAtToolAsync(arguments, ct).ConfigureAwait(false);
-                break;
-
-            case "wait-idle":
-                toolOutputJson = await ExecuteGameWaitIdleToolAsync(arguments, ct).ConfigureAwait(false);
-                break;
-
-            case "scene-info":
-                toolOutputJson = await ExecuteGameSceneInfoToolAsync(arguments, ct).ConfigureAwait(false);
-                break;
-
-            case "inspect-scene-objects":
-                toolOutputJson = await ExecuteGameInspectSceneObjectsToolAsync(arguments, ct).ConfigureAwait(false);
-                break;
-
-            case "inspect-runtime-assets":
-            case "inspect_runtime_assets":
-                toolOutputJson = await ExecuteGameInspectRuntimeAssetsToolAsync(arguments, ct).ConfigureAwait(false);
-                break;
-
-            case "list-ui":
-                toolOutputJson = await ExecuteGameListUiToolAsync(arguments, ct).ConfigureAwait(false);
-                break;
-
-            case "list-games":
-                toolOutputJson = await _workbench.ListRegisteredGamesAsync(ct).ConfigureAwait(false);
-                break;
-
-            case "game-launch":
-                toolOutputJson = await ExecuteGameLaunchToolAsync(arguments, ct).ConfigureAwait(false);
-                break;
-
-            case "game-close":
-                toolOutputJson = await _workbench.CloseGameAsync(ct).ConfigureAwait(false);
-                break;
-
-            default:
+            if (!isPlatformTool)
+            {
                 var unknownTool = JsonRpcResponse.CreateError(
                     request.Id,
                     JsonRpcErrorCodes.MethodNotFound,
                     $"Unknown tool name: '{toolName}'.");
                 return JsonSerializer.Serialize(unknownTool, JsonOptions);
+            }
+
+            var dictArgs = ExtractStringDictionary(arguments);
+            toolOutputJson = await _workbench.ExecutePlatformToolAsync(toolName, dictArgs, ct).ConfigureAwait(false);
         }
 
-        var isError = false;
+        bool isError = false;
         try
         {
             using var doc = JsonDocument.Parse(toolOutputJson);
-            if (doc.RootElement.TryGetProperty("success", out var successProp))
+            if (doc.RootElement.TryGetProperty("success", out var successProp) &&
+                (successProp.ValueKind == JsonValueKind.True || successProp.ValueKind == JsonValueKind.False))
             {
                 isError = !successProp.GetBoolean();
             }
         }
         catch (JsonException)
         {
-            // If output is not standard JSON, keep isError as false
         }
 
         var mcpResult = new
@@ -346,375 +248,455 @@ internal sealed class McpServer
                     text = toolOutputJson
                 }
             },
-            isError = isError
+            isError
         };
 
         var response = JsonRpcResponse.Success(request.Id, mcpResult);
         return JsonSerializer.Serialize(response, JsonOptions);
     }
 
+    private async Task<string?> DispatchCoreToolAsync(string toolName, JsonElement arguments, CancellationToken ct)
+    {
+        switch (toolName)
+        {
+            case "inspect":
+                return await _workbench.InspectTargetAsync(
+                    GetStringArg(arguments, "targetPath", "target_path") ?? string.Empty,
+                    GetStringArg(arguments, "runnerPath", "runner_path"),
+                    ct).ConfigureAwait(false);
+
+            case "setup":
+                return await _workbench.SetupEnvironmentAsync(
+                    GetStringArg(arguments, "targetPath", "target_path"),
+                    GetStringArg(arguments, "runnerPath", "runner_path"),
+                    GetBoolArg(arguments, "forceReinstall", "force_reinstall") ?? false,
+                    GetBoolArg(arguments, "enableConsoleLogging", "enable_console_logging") ?? true,
+                    ct).ConfigureAwait(false);
+
+            case "rollback":
+                return await _workbench.RollbackEnvironmentAsync(
+                    GetStringArg(arguments, "targetPath", "target_path"),
+                    GetStringArg(arguments, "runnerPath", "runner_path"),
+                    ct).ConfigureAwait(false);
+
+            case "extract-code":
+            case "extract_code":
+                return await _workbench.ExtractCodeAsync(
+                    GetStringArg(arguments, "moduleName", "module_name") ?? string.Empty,
+                    GetStringArg(arguments, "targetPath", "target_path"),
+                    GetStringArg(arguments, "runnerPath", "runner_path"),
+                    ct).ConfigureAwait(false);
+
+            case "query":
+                return await _workbench.QuerySymbolsAsync(
+                    GetStringArg(arguments, "searchTerm", "search_term", "query") ?? string.Empty,
+                    GetStringArg(arguments, "targetPath", "target_path"),
+                    GetStringArg(arguments, "runnerPath", "runner_path"),
+                    GetStringArg(arguments, "kind"),
+                    GetStringArg(arguments, "namespacePrefix", "namespace_prefix"),
+                    GetStringArg(arguments, "moduleFilter", "module_filter"),
+                    GetIntArg(arguments, "limit", "maxResults", "max_results") ?? 25,
+                    ct).ConfigureAwait(false);
+
+            case "search-code":
+            case "search_code":
+                return await _workbench.SearchCodeAsync(
+                    GetStringArg(arguments, "pattern", "query") ?? string.Empty,
+                    GetStringArg(arguments, "targetPath", "target_path"),
+                    GetStringArg(arguments, "runnerPath", "runner_path"),
+                    GetStringArg(arguments, "namespacePrefix", "namespace_prefix"),
+                    GetStringArg(arguments, "moduleFilter", "module_filter"),
+                    GetIntArg(arguments, "maxResults", "max_results", "limit") ?? 25,
+                    ct).ConfigureAwait(false);
+
+            case "type":
+                return await _workbench.GetTypeDetailAsync(
+                    GetStringArg(arguments, "fullTypeName", "full_type_name") ?? string.Empty,
+                    GetStringArg(arguments, "targetPath", "target_path"),
+                    GetStringArg(arguments, "runnerPath", "runner_path"),
+                    GetBoolArg(arguments, "signaturesOnly", "signatures_only") ?? false,
+                    GetStringArg(arguments, "memberFilter", "member_filter"),
+                    ct).ConfigureAwait(false);
+
+            case "notes":
+                return await _workbench.SaveResearchNotesAsync(
+                    GetStringArg(arguments, "notes") ?? string.Empty,
+                    GetStringArg(arguments, "targetPath", "target_path"),
+                    GetStringArg(arguments, "runnerPath", "runner_path"),
+                    ct).ConfigureAwait(false);
+
+            case "index-assets":
+            case "index_assets":
+                return await _workbench.IndexAssetsAsync(
+                    GetStringArg(arguments, "targetPath", "target_path"),
+                    GetStringArg(arguments, "runnerPath", "runner_path"),
+                    GetBoolArg(arguments, "forceReindex", "force_reindex") ?? false,
+                    ct).ConfigureAwait(false);
+
+            case "discover-assets":
+            case "discover_assets":
+                return await _workbench.DiscoverAssetsAsync(
+                    GetStringArg(arguments, "searchPattern", "search_pattern"),
+                    GetStringArg(arguments, "assetType", "asset_type"),
+                    GetIntArg(arguments, "maxResults", "max_results", "limit") ?? 50,
+                    GetStringArg(arguments, "targetPath", "target_path"),
+                    GetStringArg(arguments, "runnerPath", "runner_path"),
+                    GetStringArg(arguments, "containerName", "container_name"),
+                    GetStringArg(arguments, "assetKey", "asset_key"),
+                    GetIntArg(arguments, "offset") ?? 0,
+                    ct).ConfigureAwait(false);
+
+            case "extract-assets":
+            case "extract_assets":
+                return await _workbench.ExtractAssetsAsync(
+                    GetStringArg(arguments, "searchPattern", "search_pattern"),
+                    GetStringArg(arguments, "assetType", "asset_type"),
+                    GetIntArg(arguments, "maxResults", "max_results", "limit") ?? 50,
+                    GetStringArg(arguments, "outputDirectory", "output_directory"),
+                    GetStringArg(arguments, "targetPath", "target_path"),
+                    GetStringArg(arguments, "runnerPath", "runner_path"),
+                    GetStringArg(arguments, "containerName", "container_name"),
+                    GetStringArg(arguments, "assetKey", "asset_key"),
+                    GetBoolArg(arguments, "disambiguateCollisions", "disambiguate_collisions") ?? true,
+                    ct).ConfigureAwait(false);
+
+            case "scaffold":
+                return await ExecuteScaffoldToolAsync(arguments, ct).ConfigureAwait(false);
+
+            case "build":
+                return await _workbench.BuildModAsync(
+                    GetStringArg(arguments, "projectFilePath", "project_file_path") ?? string.Empty,
+                    GetStringArg(arguments, "configuration", "config") ?? "Debug",
+                    ct).ConfigureAwait(false);
+
+            case "logs":
+                LogLevel? minLevel = null;
+                string? levelStr = GetStringArg(arguments, "minLevel", "min_level");
+                if (!string.IsNullOrWhiteSpace(levelStr) && Enum.TryParse<LogLevel>(levelStr, ignoreCase: true, out var parsedLevel))
+                {
+                    minLevel = parsedLevel;
+                }
+
+                return await _workbench.ReadLogsAsync(
+                    GetStringArg(arguments, "logFilePath", "log_file_path"),
+                    GetIntArg(arguments, "maxLines", "max_lines") ?? 200,
+                    minLevel,
+                    GetStringArg(arguments, "targetPath", "target_path"),
+                    GetStringArg(arguments, "runnerPath", "runner_path"),
+                    ct).ConfigureAwait(false);
+
+            case "game-launch":
+            case "game_launch":
+                return await _workbench.LaunchInStudioAsync(
+                    GetStringArg(arguments, "targetPath", "target_path"),
+                    GetStringArg(arguments, "runnerPath", "runner_path"),
+                    GetStringArg(arguments, "extraArguments", "extra_arguments"),
+                    GetStringArg(arguments, "waitForLog", "wait_for_log"),
+                    GetIntArg(arguments, "stabilityTimeoutSeconds", "stability_timeout_seconds") ?? 30,
+                    ct).ConfigureAwait(false);
+
+            case "game-close":
+            case "game_close":
+                return await _workbench.CloseStudioTargetAsync(ct).ConfigureAwait(false);
+
+            case "recent-targets":
+            case "recent_targets":
+                return await _workbench.ListRecentTargetsAsync(ct).ConfigureAwait(false);
+
+            case "status":
+                return await _workbench.GetTargetStatusAsync(
+                    GetStringArg(arguments, "targetPath", "target_path"),
+                    GetStringArg(arguments, "runnerPath", "runner_path"),
+                    ct).ConfigureAwait(false);
+
+            case "capabilities":
+                return await _workbench.GetCapabilitiesAsync(
+                    GetIntArg(arguments, "port"),
+                    GetStringArg(arguments, "token"),
+                    ct).ConfigureAwait(false);
+
+            case "screenshot":
+                return await _workbench.CaptureScreenshotAsync(
+                    GetStringArg(arguments, "savePath", "save_path"),
+                    GetStringArg(arguments, "targetPath", "target_path"),
+                    GetIntArg(arguments, "port"),
+                    GetStringArg(arguments, "token"),
+                    ct).ConfigureAwait(false);
+
+            case "send-input":
+            case "send_input":
+                return await ExecuteSendInputToolAsync(arguments, ct).ConfigureAwait(false);
+
+            case "get-controls":
+            case "get_controls":
+                return await _workbench.GetControlsAsync(
+                    GetStringArg(arguments, "targetPath", "target_path"),
+                    GetStringArg(arguments, "runnerPath", "runner_path"),
+                    ct).ConfigureAwait(false);
+
+            case "set-controls":
+            case "set_controls":
+                return await ExecuteSetControlsToolAsync(arguments, ct).ConfigureAwait(false);
+
+            case "trigger-action":
+            case "trigger_action":
+                return await _workbench.TriggerActionAsync(
+                    GetStringArg(arguments, "actionName", "action_name") ?? string.Empty,
+                    GetStringArg(arguments, "targetPath", "target_path"),
+                    GetStringArg(arguments, "runnerPath", "runner_path"),
+                    GetIntArg(arguments, "port"),
+                    GetStringArg(arguments, "token"),
+                    ct).ConfigureAwait(false);
+
+            case "wait-idle":
+            case "wait_idle":
+                return await _workbench.WaitIdleAsync(
+                    GetIntArg(arguments, "maxFrames", "max_frames") ?? 10,
+                    GetIntArg(arguments, "timeoutMs", "timeout_ms") ?? 3000,
+                    GetIntArg(arguments, "port"),
+                    GetStringArg(arguments, "token"),
+                    ct).ConfigureAwait(false);
+
+            case "list-ui":
+            case "list_ui":
+                return await _workbench.ListUiElementsAsync(
+                    GetIntArg(arguments, "port"),
+                    GetStringArg(arguments, "token"),
+                    ct).ConfigureAwait(false);
+
+            case "scene-info":
+            case "scene_info":
+                return await _workbench.GetSceneInfoAsync(
+                    GetIntArg(arguments, "port"),
+                    GetStringArg(arguments, "token"),
+                    ct).ConfigureAwait(false);
+
+            case "inspect-scene":
+            case "inspect_scene":
+                return await _workbench.InspectSceneAsync(
+                    GetStringArg(arguments, "nameFilter", "name_filter"),
+                    GetBoolArg(arguments, "includeInactive", "include_inactive") ?? false,
+                    GetBoolArg(arguments, "visibleOnly", "visible_only") ?? false,
+                    GetStringArg(arguments, "attributeFilter", "attribute_filter"),
+                    GetIntArg(arguments, "maxResults", "max_results", "limit") ?? 100,
+                    GetIntArg(arguments, "port"),
+                    GetStringArg(arguments, "token"),
+                    ct).ConfigureAwait(false);
+
+            case "inspect-runtime-assets":
+            case "inspect_runtime_assets":
+                return await _workbench.InspectRuntimeAssetsAsync(
+                    GetStringArg(arguments, "nameFilter", "name_filter"),
+                    GetStringArg(arguments, "assetType", "asset_type"),
+                    GetIntArg(arguments, "maxResults", "max_results", "limit") ?? 50,
+                    GetIntArg(arguments, "port"),
+                    GetStringArg(arguments, "token"),
+                    ct).ConfigureAwait(false);
+
+            default:
+                return null;
+        }
+    }
+
+    private async Task<string> ExecuteScaffoldToolAsync(JsonElement arguments, CancellationToken ct)
+    {
+        var platformOptions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if ((arguments.TryGetProperty("platformOptions", out var po) || arguments.TryGetProperty("platform_options", out po)) &&
+            po.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var prop in po.EnumerateObject())
+            {
+                if (prop.Value.ValueKind == JsonValueKind.String)
+                {
+                    platformOptions[prop.Name] = prop.Value.GetString() ?? string.Empty;
+                }
+            }
+        }
+
+        return await _workbench.ScaffoldModAsync(
+            modName: GetStringArg(arguments, "modName", "mod_name") ?? string.Empty,
+            modId: GetStringArg(arguments, "modId", "mod_id"),
+            version: GetStringArg(arguments, "version") ?? "1.0.0",
+            outputDirectory: GetStringArg(arguments, "outputDirectory", "output_directory"),
+            targetPath: GetStringArg(arguments, "targetPath", "target_path"),
+            runnerPath: GetStringArg(arguments, "runnerPath", "runner_path"),
+            includeAssetPipeline: GetBoolArg(arguments, "includeAssetPipeline", "include_asset_pipeline") ?? false,
+            platformOptions: platformOptions.Count > 0 ? platformOptions : null,
+            ct: ct).ConfigureAwait(false);
+    }
+
+    private async Task<string> ExecuteSendInputToolAsync(JsonElement arguments, CancellationToken ct)
+    {
+        string channel = GetStringArg(arguments, "channel") ?? VisionConstants.ChannelPointer;
+        string defaultAction = string.Equals(channel, VisionConstants.ChannelPointer, StringComparison.OrdinalIgnoreCase)
+            ? "click"
+            : "press";
+
+        var req = new VisionInputRequest
+        {
+            Channel = channel,
+            Action = GetStringArg(arguments, "action") ?? defaultAction,
+            X = GetFloatArg(arguments, "x"),
+            Y = GetFloatArg(arguments, "y"),
+            Button = GetIntArg(arguments, "button") ?? 0,
+            Key = GetStringArg(arguments, "key"),
+            GamepadButton = GetStringArg(arguments, "gamepadButton", "gamepad_button"),
+            Stick = GetStringArg(arguments, "stick"),
+            StickX = GetFloatArg(arguments, "stickX", "stick_x"),
+            StickY = GetFloatArg(arguments, "stickY", "stick_y"),
+            HoldFrames = GetIntArg(arguments, "holdFrames", "hold_frames") ?? 6,
+            Method = GetStringArg(arguments, "method")
+        };
+
+        return await _workbench.SendInputAsync(
+            req,
+            GetIntArg(arguments, "port"),
+            GetStringArg(arguments, "token"),
+            ct).ConfigureAwait(false);
+    }
+
+    private async Task<string> ExecuteSetControlsToolAsync(JsonElement arguments, CancellationToken ct)
+    {
+        var entries = new List<ControlActionEntry>();
+        if (arguments.ValueKind == JsonValueKind.Object &&
+            arguments.TryGetProperty("actions", out var arr) &&
+            arr.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in arr.EnumerateArray())
+            {
+                string? actionName = GetStringArg(item, "actionName", "action_name");
+                if (string.IsNullOrWhiteSpace(actionName))
+                {
+                    continue;
+                }
+
+                string displayName = GetStringArg(item, "displayName", "display_name") ?? actionName;
+                string channelStr = GetStringArg(item, "channel") ?? "Keyboard";
+                if (!Enum.TryParse<InputChannel>(channelStr, ignoreCase: true, out var parsedChannel))
+                {
+                    parsedChannel = InputChannel.Keyboard;
+                }
+
+                var binding = new InputBinding(
+                    Channel: parsedChannel,
+                    Key: GetStringArg(item, "key"),
+                    GamepadButton: GetStringArg(item, "gamepadButton", "gamepad_button"),
+                    MouseButton: GetIntArg(item, "mouseButton", "mouse_button") ?? 0,
+                    NormalizedX: GetFloatArg(item, "normalizedX", "normalized_x"),
+                    NormalizedY: GetFloatArg(item, "normalizedY", "normalized_y"),
+                    HoldFrames: GetIntArg(item, "holdFrames", "hold_frames") ?? 6,
+                    Description: GetStringArg(item, "description"));
+
+                entries.Add(new ControlActionEntry(actionName, displayName, "agent", [binding]));
+            }
+        }
+
+        return await _workbench.SetControlsAsync(
+            entries,
+            overwriteUserBindings: GetBoolArg(arguments, "overwriteUserBindings", "overwrite_user_bindings") ?? false,
+            targetPath: GetStringArg(arguments, "targetPath", "target_path"),
+            runnerPath: GetStringArg(arguments, "runnerPath", "runner_path"),
+            ct: ct).ConfigureAwait(false);
+    }
+
+    private static Dictionary<string, string?> ExtractStringDictionary(JsonElement arguments)
+    {
+        var dict = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        if (arguments.ValueKind != JsonValueKind.Object)
+        {
+            return dict;
+        }
+
+        foreach (var prop in arguments.EnumerateObject())
+        {
+            dict[prop.Name] = prop.Value.ValueKind switch
+            {
+                JsonValueKind.String => prop.Value.GetString(),
+                JsonValueKind.True => "true",
+                JsonValueKind.False => "false",
+                JsonValueKind.Number => prop.Value.GetRawText(),
+                _ => null
+            };
+        }
+
+        return dict;
+    }
+
     private static string? GetStringArg(JsonElement arguments, params string[] propertyNames)
     {
-        if (arguments.ValueKind != JsonValueKind.Object) return null;
+        if (arguments.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
         foreach (var name in propertyNames)
         {
             if (arguments.TryGetProperty(name, out var prop) && prop.ValueKind == JsonValueKind.String)
             {
-                var val = prop.GetString();
-                if (!string.IsNullOrWhiteSpace(val)) return val;
+                string? val = prop.GetString();
+                if (!string.IsNullOrWhiteSpace(val))
+                {
+                    return val;
+                }
             }
         }
+
         return null;
     }
 
     private static int? GetIntArg(JsonElement arguments, params string[] propertyNames)
     {
-        if (arguments.ValueKind != JsonValueKind.Object) return null;
-        foreach (var name in propertyNames)
+        if (arguments.ValueKind != JsonValueKind.Object)
         {
-            if (arguments.TryGetProperty(name, out var prop) && prop.TryGetInt32(out var val))
-            {
-                return val;
-            }
+            return null;
         }
-        return null;
-    }
 
-    private static long? GetLongArg(JsonElement arguments, params string[] propertyNames)
-    {
-        if (arguments.ValueKind != JsonValueKind.Object) return null;
         foreach (var name in propertyNames)
         {
-            if (arguments.TryGetProperty(name, out var prop) && prop.TryGetInt64(out var val))
+            if (arguments.TryGetProperty(name, out var prop) && prop.TryGetInt32(out int val))
             {
                 return val;
             }
         }
+
         return null;
     }
 
     private static bool? GetBoolArg(JsonElement arguments, params string[] propertyNames)
     {
-        if (arguments.ValueKind != JsonValueKind.Object) return null;
+        if (arguments.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
         foreach (var name in propertyNames)
         {
-            if (arguments.TryGetProperty(name, out var prop) && (prop.ValueKind == JsonValueKind.True || prop.ValueKind == JsonValueKind.False))
+            if (arguments.TryGetProperty(name, out var prop) &&
+                (prop.ValueKind == JsonValueKind.True || prop.ValueKind == JsonValueKind.False))
             {
                 return prop.GetBoolean();
             }
         }
+
         return null;
     }
 
     private static float? GetFloatArg(JsonElement arguments, params string[] propertyNames)
     {
-        if (arguments.ValueKind != JsonValueKind.Object) return null;
+        if (arguments.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
         foreach (var name in propertyNames)
         {
-            if (arguments.TryGetProperty(name, out var prop) && prop.TryGetDouble(out var val))
+            if (arguments.TryGetProperty(name, out var prop) && prop.TryGetDouble(out double val))
             {
                 return (float)val;
             }
         }
+
         return null;
-    }
-
-    private async Task<string> ExecuteInspectGameEnvironmentToolAsync(JsonElement arguments, CancellationToken ct)
-    {
-        var gameDirectory = GetStringArg(arguments, "gameDirectory", "game_directory", "dir") ?? string.Empty;
-        return await _workbench.InspectGameEnvironmentAsync(gameDirectory, ct).ConfigureAwait(false);
-    }
-
-    private async Task<string> ExecuteSetupGameEnvironmentToolAsync(JsonElement arguments, CancellationToken ct)
-    {
-        var gameDirectory = GetStringArg(arguments, "gameDirectory", "game_directory", "dir");
-        var forceReinstall = GetBoolArg(arguments, "forceReinstall", "force_reinstall") ?? false;
-        var enableConsoleLogging = GetBoolArg(arguments, "enableConsoleLogging", "enable_console_logging") ?? true;
-
-        return await _workbench.SetupGameEnvironmentAsync(gameDirectory, forceReinstall, enableConsoleLogging, ct).ConfigureAwait(false);
-    }
-
-    private async Task<string> ExecuteRollbackGameEnvironmentToolAsync(JsonElement arguments, CancellationToken ct)
-    {
-        var gameDirectory = GetStringArg(arguments, "gameDirectory", "game_directory", "dir");
-        return await _workbench.RollbackGameEnvironmentAsync(gameDirectory, ct).ConfigureAwait(false);
-    }
-
-    private async Task<string> ExecuteDecompileAssemblyToolAsync(JsonElement arguments, CancellationToken ct)
-    {
-        var assemblyName = GetStringArg(arguments, "assemblyName", "assembly_name", "assemblyPath", "assembly_path") ?? string.Empty;
-        var gameDirectory = GetStringArg(arguments, "gameDirectory", "game_directory", "dir");
-
-        return await _workbench.DecompileAssemblyAsync(gameDirectory, assemblyName, ct).ConfigureAwait(false);
-    }
-
-    private async Task<string> ExecuteSearchGameSymbolsToolAsync(JsonElement arguments, CancellationToken ct)
-    {
-        var searchTerm = GetStringArg(arguments, "searchTerm", "search_term", "query") ?? string.Empty;
-        var gameDirectory = GetStringArg(arguments, "gameDirectory", "game_directory", "dir");
-        var kind = GetStringArg(arguments, "kind", "symbolKind", "symbol_kind");
-        var namespacePrefix = GetStringArg(arguments, "namespacePrefix", "namespace_prefix", "namespace");
-        var limit = GetIntArg(arguments, "limit", "maxResults", "max_results") ?? 25;
-
-        return await _workbench.SearchGameSymbolsOnlyAsync(
-            searchTerm, gameDirectory, kind, namespacePrefix, limit, ct).ConfigureAwait(false);
-    }
-
-    private async Task<string> ExecuteSearchGameCodeToolAsync(JsonElement arguments, CancellationToken ct)
-    {
-        var pattern = GetStringArg(arguments, "pattern", "searchTerm", "search_term", "query") ?? string.Empty;
-        var gameDirectory = GetStringArg(arguments, "gameDirectory", "game_directory", "dir");
-        var namespacePrefix = GetStringArg(arguments, "namespacePrefix", "namespace_prefix", "namespace");
-        var assemblyName = GetStringArg(arguments, "assemblyName", "assembly_name", "assembly");
-        var maxResults = GetIntArg(arguments, "maxResults", "max_results", "limit") ?? 25;
-
-        return await _workbench.SearchGameCodeAsync(
-            pattern, gameDirectory, namespacePrefix, assemblyName, maxResults, ct).ConfigureAwait(false);
-    }
-
-    private async Task<string> ExecuteSaveResearchNotesToolAsync(JsonElement arguments, CancellationToken ct)
-    {
-        var notes = GetStringArg(arguments, "notes") ?? string.Empty;
-        var gameDirectory = GetStringArg(arguments, "gameDirectory", "game_directory", "dir");
-
-        return await _workbench.SaveResearchNotesAsync(notes, gameDirectory, ct).ConfigureAwait(false);
-    }
-
-    private async Task<string> ExecuteGetTypeDetailToolAsync(JsonElement arguments, CancellationToken ct)
-    {
-        var fullTypeName = GetStringArg(arguments, "fullTypeName", "full_type_name", "typeName", "type_name") ?? string.Empty;
-        var gameDirectory = GetStringArg(arguments, "gameDirectory", "game_directory", "dir");
-        var signaturesOnly = GetBoolArg(arguments, "signaturesOnly", "signatures_only") ?? false;
-        var memberFilter = GetStringArg(arguments, "memberFilter", "member_filter", "member");
-
-        return await _workbench.GetTypeDetailAsync(
-            fullTypeName, gameDirectory, signaturesOnly, memberFilter, ct).ConfigureAwait(false);
-    }
-
-    private async Task<string> ExecuteAddProjectReferenceToolAsync(JsonElement arguments, CancellationToken ct)
-    {
-        var projectFilePath = GetStringArg(arguments, "projectFilePath", "project_file_path", "project", "path") ?? string.Empty;
-        var assemblyName = GetStringArg(arguments, "assemblyName", "assembly_name", "assembly") ?? string.Empty;
-        var publicize = GetBoolArg(arguments, "publicize") ?? false;
-        var gameDirectory = GetStringArg(arguments, "gameDirectory", "game_directory", "dir");
-
-        return await _workbench.AddProjectReferenceAsync(
-            projectFilePath, assemblyName, publicize, gameDirectory, ct).ConfigureAwait(false);
-    }
-
-    private async Task<string> ExecuteScaffoldModToolAsync(JsonElement arguments, CancellationToken ct)
-    {
-        var modName = GetStringArg(arguments, "modName", "mod_name") ?? string.Empty;
-        var pluginGuid = GetStringArg(arguments, "pluginGuid", "plugin_guid") ?? string.Empty;
-        var version = GetStringArg(arguments, "version") ?? "1.0.0";
-        var outputDirectory = GetStringArg(arguments, "outputDirectory", "output_directory", "out") ?? string.Empty;
-        var gameDirectory = GetStringArg(arguments, "gameDirectory", "game_directory", "dir") ?? string.Empty;
-
-        var publicizedList = new List<string>();
-        if ((arguments.TryGetProperty("publicizedAssemblies", out var pubProp) || arguments.TryGetProperty("publicized_assemblies", out pubProp)) && pubProp.ValueKind == JsonValueKind.Array)
-        {
-            foreach (var item in pubProp.EnumerateArray())
-            {
-                var val = item.GetString();
-                if (!string.IsNullOrWhiteSpace(val))
-                {
-                    publicizedList.Add(val);
-                }
-            }
-        }
-
-        var includeAssets = GetBoolArg(arguments, "includeAssetPipeline", "include_asset_pipeline", "withAssets", "with_assets") ?? false;
-
-        return await _workbench.ScaffoldModByPathAsync(
-            modName,
-            pluginGuid,
-            version,
-            outputDirectory,
-            gameDirectory,
-            publicizedList,
-            includeAssets,
-            ct).ConfigureAwait(false);
-    }
-
-    private async Task<string> ExecuteBuildModToolAsync(JsonElement arguments, CancellationToken ct)
-    {
-        var projectFilePath = GetStringArg(arguments, "projectFilePath", "project_file_path", "project", "path") ?? string.Empty;
-        var configuration = GetStringArg(arguments, "configuration", "config") ?? "Debug";
-
-        return await _workbench.BuildModAsync(projectFilePath, configuration, ct).ConfigureAwait(false);
-    }
-
-    private async Task<string> ExecuteReadLogsToolAsync(JsonElement arguments, CancellationToken ct)
-    {
-        var logFilePath = GetStringArg(arguments, "logFilePath", "log_file_path", "path");
-        var gameDirectory = GetStringArg(arguments, "gameDirectory", "game_directory", "dir");
-        var maxLines = GetIntArg(arguments, "maxLines", "max_lines") ?? 200;
-
-        LogLevel? minLevel = null;
-        var levelStr = GetStringArg(arguments, "minLevel", "min_level");
-        if (!string.IsNullOrWhiteSpace(levelStr) && Enum.TryParse<LogLevel>(levelStr, ignoreCase: true, out var parsedLevel))
-        {
-            minLevel = parsedLevel;
-        }
-
-        return await _workbench.ReadLogsAsync(logFilePath, maxLines, minLevel, gameDirectory, ct).ConfigureAwait(false);
-    }
-
-    private async Task<string> ExecuteGameProcessStatusToolAsync(JsonElement arguments, CancellationToken ct)
-    {
-        var gameDirectory = GetStringArg(arguments, "gameDirectory", "game_directory", "dir");
-        return await _workbench.GetGameProcessStatusAsync(gameDirectory, ct).ConfigureAwait(false);
-    }
-
-    private async Task<string> ExecuteLaunchGameToolAsync(JsonElement arguments, CancellationToken ct)
-    {
-        var gameDirectory = GetStringArg(arguments, "gameDirectory", "game_directory", "dir");
-        var windowed = GetBoolArg(arguments, "windowed") ?? true;
-        var width = GetIntArg(arguments, "screenWidth", "screen_width") ?? 1280;
-        var height = GetIntArg(arguments, "screenHeight", "screen_height") ?? 720;
-
-        return await _workbench.LaunchGameAsync(gameDirectory, windowed, width, height, ct).ConfigureAwait(false);
-    }
-
-    private async Task<string> ExecuteStopGameToolAsync(JsonElement arguments, CancellationToken ct)
-    {
-        var gameDirectory = GetStringArg(arguments, "gameDirectory", "game_directory", "dir");
-        return await _workbench.StopGameAsync(gameDirectory, ct).ConfigureAwait(false);
-    }
-
-    private async Task<string> ExecuteIndexGameAssetsToolAsync(JsonElement arguments, CancellationToken ct)
-    {
-        var gameDirectory = GetStringArg(arguments, "gameDirectory", "game_directory", "dir");
-        return await _workbench.IndexGameAssetsAsync(gameDirectory, ct).ConfigureAwait(false);
-    }
-
-    private async Task<string> ExecuteDiscoverGameAssetsToolAsync(JsonElement arguments, CancellationToken ct)
-    {
-        var searchPattern = GetStringArg(arguments, "searchPattern", "search_pattern", "pattern");
-        var assetType = GetStringArg(arguments, "assetType", "asset_type", "type");
-        var maxResults = GetIntArg(arguments, "maxResults", "max_results", "limit") ?? 50;
-        var offset = GetIntArg(arguments, "offset") ?? 0;
-        var gameDirectory = GetStringArg(arguments, "gameDirectory", "game_directory", "dir");
-        var containerName = GetStringArg(arguments, "containerName", "container_name", "container");
-        var pathId = GetLongArg(arguments, "pathId", "path_id");
-
-        return await _workbench.DiscoverGameAssetsAsync(
-            searchPattern, assetType, maxResults, gameDirectory, containerName, pathId, offset, ct).ConfigureAwait(false);
-    }
-
-    private async Task<string> ExecuteExtractGameAssetsToolAsync(JsonElement arguments, CancellationToken ct)
-    {
-        var searchPattern = GetStringArg(arguments, "searchPattern", "search_pattern", "pattern");
-        var assetType = GetStringArg(arguments, "assetType", "asset_type", "type");
-        var maxResults = GetIntArg(arguments, "maxResults", "max_results", "limit") ?? 50;
-        var outputDirectory = GetStringArg(arguments, "outputDirectory", "output_directory", "out");
-        var gameDirectory = GetStringArg(arguments, "gameDirectory", "game_directory", "dir");
-        var containerName = GetStringArg(arguments, "containerName", "container_name", "container");
-        var pathId = GetLongArg(arguments, "pathId", "path_id");
-        var disambiguateCollisions = GetBoolArg(arguments, "disambiguateCollisions", "disambiguate_collisions") ?? true;
-
-        return await _workbench.ExtractGameAssetsAsync(
-            searchPattern, assetType, maxResults, outputDirectory, gameDirectory, containerName, pathId, disambiguateCollisions, ct).ConfigureAwait(false);
-    }
-
-    private async Task<string> ExecuteGameCapabilitiesToolAsync(JsonElement arguments, CancellationToken ct)
-    {
-        int? port = GetIntArg(arguments, "port");
-        string? token = GetStringArg(arguments, "token");
-        return await _workbench.GetGameCapabilitiesAsync(port, token, ct).ConfigureAwait(false);
-    }
-
-    private async Task<string> ExecuteGameScreenshotToolAsync(JsonElement arguments, CancellationToken ct)
-    {
-        string? savePath = GetStringArg(arguments, "savePath", "save_path");
-        string? gameDir = GetStringArg(arguments, "gameDirectory", "game_directory", "dir");
-        int? port = GetIntArg(arguments, "port");
-        string? token = GetStringArg(arguments, "token");
-        return await _workbench.CaptureGameScreenshotAsync(port, token, savePath, gameDir, ct).ConfigureAwait(false);
-    }
-
-    private async Task<string> ExecuteGameClickAtToolAsync(JsonElement arguments, CancellationToken ct)
-    {
-        var xVal = GetFloatArg(arguments, "x");
-        var yVal = GetFloatArg(arguments, "y");
-        if (xVal == null || yVal == null)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = "Parametri 'x' e 'y' obbligatori mancanti per click.",
-                suggestion = "Fornisci coordinate x e y in pixel relative allo screenshot (origine in alto a sinistra)."
-            }, JsonOptions);
-        }
-
-        float x = xVal.Value;
-        float y = yVal.Value;
-        int button = GetIntArg(arguments, "button") ?? 0;
-        int holdFrames = GetIntArg(arguments, "holdFrames", "hold_frames") ?? 6;
-        string? method = GetStringArg(arguments, "method");
-        int? port = GetIntArg(arguments, "port");
-        string? token = GetStringArg(arguments, "token");
-
-        return await _workbench.ClickGameAtAsync(x, y, button, holdFrames, method, port, token, ct).ConfigureAwait(false);
-    }
-
-    private async Task<string> ExecuteGameWaitIdleToolAsync(JsonElement arguments, CancellationToken ct)
-    {
-        int maxFrames = GetIntArg(arguments, "maxFrames", "max_frames") ?? 10;
-        int timeoutMs = GetIntArg(arguments, "timeoutMs", "timeout_ms") ?? 3000;
-        int? port = GetIntArg(arguments, "port");
-        string? token = GetStringArg(arguments, "token");
-
-        return await _workbench.WaitGameIdleAsync(maxFrames, timeoutMs, port, token, ct).ConfigureAwait(false);
-    }
-
-    private async Task<string> ExecuteGameSceneInfoToolAsync(JsonElement arguments, CancellationToken ct)
-    {
-        int? port = GetIntArg(arguments, "port");
-        string? token = GetStringArg(arguments, "token");
-
-        return await _workbench.GetGameSceneInfoAsync(port, token, ct).ConfigureAwait(false);
-    }
-
-    private async Task<string> ExecuteGameInspectSceneObjectsToolAsync(JsonElement arguments, CancellationToken ct)
-    {
-        string? nameFilter = GetStringArg(arguments, "nameFilter", "name_filter", "filter", "name");
-        bool includeInactive = GetBoolArg(arguments, "includeInactive", "include_inactive") ?? false;
-        bool visibleOnly = GetBoolArg(arguments, "visibleOnly", "visible_only") ?? false;
-        string? sortingLayer = GetStringArg(arguments, "sortingLayer", "sorting_layer");
-        int maxResults = GetIntArg(arguments, "maxResults", "max_results", "limit") ?? 100;
-        int? port = GetIntArg(arguments, "port");
-        string? token = GetStringArg(arguments, "token");
-
-        return await _workbench.InspectSceneObjectsAsync(
-            nameFilter, port, token, includeInactive, visibleOnly, sortingLayer, maxResults, ct).ConfigureAwait(false);
-    }
-
-    private async Task<string> ExecuteGameInspectRuntimeAssetsToolAsync(JsonElement arguments, CancellationToken ct)
-    {
-        string? nameFilter = GetStringArg(arguments, "nameFilter", "name_filter", "pattern", "filter", "name");
-        string? assetType = GetStringArg(arguments, "assetType", "asset_type", "type");
-        int maxResults = GetIntArg(arguments, "maxResults", "max_results", "limit") ?? 50;
-        int? port = GetIntArg(arguments, "port");
-        string? token = GetStringArg(arguments, "token");
-
-        return await _workbench.InspectRuntimeAssetsAsync(
-            nameFilter, assetType, maxResults, port, token, ct).ConfigureAwait(false);
-    }
-
-    private async Task<string> ExecuteGameListUiToolAsync(JsonElement arguments, CancellationToken ct)
-    {
-        int? port = GetIntArg(arguments, "port");
-        string? token = GetStringArg(arguments, "token");
-
-        return await _workbench.ListGameUiElementsAsync(port, token, ct).ConfigureAwait(false);
-    }
-
-    private async Task<string> ExecuteGameLaunchToolAsync(JsonElement arguments, CancellationToken ct)
-    {
-        string? name = GetStringArg(arguments, "name");
-        string? waitForLog = GetStringArg(arguments, "waitForLog", "wait_for_log");
-        return await _workbench.LaunchGameByNameAsync(name ?? string.Empty, waitForLog, ct).ConfigureAwait(false);
     }
 
     private static string HandleMethodNotFound(JsonRpcRequest request)

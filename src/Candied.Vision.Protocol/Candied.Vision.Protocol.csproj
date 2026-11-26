@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework></TargetFramework>
+    <TargetFrameworks>net35;net472;netstandard2.0;net9.0</TargetFrameworks>
+    <RootNamespace>Candied.Vision.Protocol</RootNamespace>
+    <AssemblyName>Candied.Vision.Protocol</AssemblyName>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings Condition="'$(TargetFramework)' == 'net35'">disable</ImplicitUsings>
+    <NoWarn>$(NoWarn);CA1720;CA1834;CA1510;CA1002;CA2227</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net35' or '$(TargetFramework)' == 'net472'">
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="All" />
+  </ItemGroup>
+</Project>

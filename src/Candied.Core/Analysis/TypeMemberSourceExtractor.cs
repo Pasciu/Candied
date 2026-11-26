@@ -6,7 +6,7 @@ namespace Candied.Core.Analysis;
 
 /// <summary>
 /// Pure helper that extracts member blocks matching a case-insensitive substring filter
-/// from a decompiled C# type's raw source code without requiring external parsers or disk I/O.
+/// from a type's raw source code without requiring external parsers or disk I/O.
 /// </summary>
 public static class TypeMemberSourceExtractor
 {
@@ -31,28 +31,25 @@ public static class TypeMemberSourceExtractor
             int netDelta = CountBraceDelta(line);
             currentDepth += netDelta;
 
-            // Detect outer type body opening brace (first '{' encountered)
             if (typeBraceDepth < 0)
             {
                 if (currentDepth > 0)
                 {
                     typeBraceDepth = currentDepth;
                 }
+
                 continue;
             }
 
-            // Look for member declarations at the direct member depth of the type
             if (depthBefore == typeBraceDepth &&
                 line.Contains(memberFilter, StringComparison.OrdinalIgnoreCase))
             {
-                // Include preceding attributes (e.g., [SerializeField], [Header(...)])
                 int startIdx = i;
                 while (startIdx > 0 && lines[startIdx - 1].TrimStart().StartsWith('['))
                 {
                     startIdx--;
                 }
 
-                // Single-line field/auto-property ending with ';'
                 string trimmed = line.TrimEnd();
                 if (currentDepth == typeBraceDepth && trimmed.EndsWith(';'))
                 {
@@ -60,7 +57,6 @@ public static class TypeMemberSourceExtractor
                     continue;
                 }
 
-                // Multi-line block (method, property, constructor, nested type): consume until depth returns to typeBraceDepth
                 int endIdx = i;
                 bool enteredBlock = currentDepth > typeBraceDepth;
 
@@ -79,7 +75,6 @@ public static class TypeMemberSourceExtractor
                         enteredBlock = true;
                     }
 
-                    // Expression-bodied member or multi-line field ending in ';' before opening a block
                     if (!enteredBlock && lines[endIdx].TrimEnd().EndsWith(';'))
                     {
                         break;
@@ -108,8 +103,10 @@ public static class TypeMemberSourceExtractor
             {
                 sb.AppendLine();
             }
+
             sb.Append(lines[idx]);
         }
+
         return sb.ToString();
     }
 
@@ -138,7 +135,7 @@ public static class TypeMemberSourceExtractor
 
             if (!inString && !inChar && c == '/' && i + 1 < line.Length && line[i + 1] == '/')
             {
-                break; // Line comment
+                break;
             }
 
             if (!inChar && c == '"')
@@ -155,8 +152,14 @@ public static class TypeMemberSourceExtractor
 
             if (!inString && !inChar)
             {
-                if (c == '{') delta++;
-                else if (c == '}') delta--;
+                if (c == '{')
+                {
+                    delta++;
+                }
+                else if (c == '}')
+                {
+                    delta--;
+                }
             }
         }
 

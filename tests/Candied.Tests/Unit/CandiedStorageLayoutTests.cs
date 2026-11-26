@@ -6,31 +6,33 @@ namespace Candied.Tests.Unit;
 public class CandiedStorageLayoutTests
 {
     [Fact]
-    public void StorageLayout_Generates_Correct_Zone_Paths()
+    public void StorageLayout_Generates_Correct_ThreeZone_Paths()
     {
-        var layout = new CandiedStorageLayout("C:/MyProject");
+        var layout = new CandiedStorageLayout("C:/MyWorkspace");
 
-        Assert.Equal("C:/MyProject/.candied", layout.CandiedRoot);
-        Assert.Equal("C:/MyProject/mods", layout.ModsRoot);
-        Assert.Equal("C:/MyProject/.candied/games/Potion-Craft", layout.GetGameArtifactsDir("Potion Craft"));
-        Assert.Equal("C:/MyProject/.candied/games/Potion-Craft/decompiled", layout.GetDecompiledDir("Potion Craft"));
-        Assert.Equal("C:/MyProject/.candied/games/Potion-Craft/index.db", layout.GetDatabasePath("Potion Craft"));
-        Assert.Equal("C:/MyProject/.candied/games/Potion-Craft/docs", layout.GetDocsDir("Potion Craft"));
-        Assert.Equal("C:/MyProject/.candied/games/Potion-Craft/docs/GAME_OVERVIEW.md", layout.GetOverviewDocPath("Potion Craft"));
-        Assert.Equal("C:/MyProject/.candied/games/Potion-Craft/docs/NAMESPACES.md", layout.GetNamespacesDocPath("Potion Craft"));
-        Assert.Equal("C:/MyProject/.candied/games/Potion-Craft/docs/SYMBOLS_INDEX.json", layout.GetSymbolsIndexJsonPath("Potion Craft"));
-        Assert.Equal("C:/MyProject/mods/LaboratoryRoom", layout.GetModProjectDir("LaboratoryRoom"));
+        Assert.Equal("C:/MyWorkspace/.candied", layout.CandiedRoot);
+        Assert.Equal("C:/MyWorkspace/mods", layout.ModsRoot);
+        Assert.Equal("C:/MyWorkspace/.candied/games/Sample-Game", layout.GetTargetArtifactsDir("Sample Game"));
+        Assert.Equal("C:/MyWorkspace/.candied/games/Sample-Game/extracted", layout.GetExtractedCodeDir("Sample Game"));
+        Assert.Equal("C:/MyWorkspace/.candied/games/Sample-Game/extracted/Assembly-CSharp", layout.GetExtractedCodeDir("Sample Game", "Assembly-CSharp"));
+        Assert.Equal("C:/MyWorkspace/.candied/games/Sample-Game/index.db", layout.GetDatabasePath("Sample Game"));
+        Assert.Equal("C:/MyWorkspace/.candied/games/Sample-Game/controls.json", layout.GetControlProfilePath("Sample Game"));
+        Assert.Equal("C:/MyWorkspace/.candied/games/Sample-Game/docs", layout.GetDocsDir("Sample Game"));
+        Assert.Equal("C:/MyWorkspace/.candied/games/Sample-Game/docs/TARGET_OVERVIEW.md", layout.GetOverviewDocPath("Sample Game"));
+        Assert.Equal("C:/MyWorkspace/.candied/games/Sample-Game/docs/NAMESPACES.md", layout.GetNamespacesDocPath("Sample Game"));
+        Assert.Equal("C:/MyWorkspace/.candied/games/Sample-Game/docs/SYMBOLS_INDEX.json", layout.GetSymbolsIndexJsonPath("Sample Game"));
+        Assert.Equal("C:/MyWorkspace/mods/LaboratoryRoom", layout.GetModProjectDir("LaboratoryRoom"));
     }
 
     [Theory]
-    [InlineData("Potion Craft", "Potion-Craft")]
+    [InlineData("Sample Game", "Sample-Game")]
     [InlineData("Game!@#$%^&*()_+Name", "Game_Name")]
-    [InlineData("Hollow Knight: Silksong", "Hollow-Knight-Silksong")]
+    [InlineData("Adventure Quest: Chapter Two", "Adventure-Quest-Chapter-Two")]
     [InlineData("", "Default")]
     [InlineData("   ", "Default")]
-    public void Sanitize_Cleans_Game_And_Mod_Names(string input, string expected)
+    public void Sanitize_Cleans_Target_And_Mod_Names(string input, string expected)
     {
-        var result = CandiedStorageLayout.Sanitize(input);
+        string result = CandiedStorageLayout.Sanitize(input);
         Assert.Equal(expected, result);
     }
 

@@ -20,14 +20,18 @@
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="9.0.2" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.23" />
+    <PackageReference Include="System.Drawing.Common" Version="9.0.2" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Candied.Primitives\Candied.Primitives.csproj" />
-    <ProjectReference Include="..\..\src\Candied.VisionBridge.Protocol\Candied.VisionBridge.Protocol.csproj" />
     <ProjectReference Include="..\..\src\Candied.Core\Candied.Core.csproj" />
-    <ProjectReference Include="..\..\src\Candied.Decompiler\Candied.Decompiler.csproj" />
-    <ProjectReference Include="..\..\src\Candied.Workspace\Candied.Workspace.csproj" />
+    <ProjectReference Include="..\..\src\Candied.Vision.Protocol\Candied.Vision.Protocol.csproj" />
+    <ProjectReference Include="..\..\src\Candied.Vision\Candied.Vision.csproj" />
+    <ProjectReference Include="..\..\src\Candied.Infrastructure\Candied.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\Platforms\Candied.Platforms.Unity.Shared\Candied.Platforms.Unity.Shared.csproj" />
+    <ProjectReference Include="..\..\src\Platforms\Candied.Platforms.Unity.Mono\Candied.Platforms.Unity.Mono.csproj" />
     <ProjectReference Include="..\..\src\Candied.Agent\Candied.Agent.csproj" />
   </ItemGroup>
 

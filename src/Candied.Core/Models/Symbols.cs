@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+
 namespace Candied.Core.Models;
 
 public enum SymbolKind
@@ -18,25 +20,26 @@ public enum SymbolKindFilter
     MemberOnly
 }
 
-public record SymbolQuery(
+public sealed record SymbolQuery(
     string SearchTerm,
     SymbolKindFilter Filter = SymbolKindFilter.All,
     string? NamespacePrefix = null,
     int Limit = 25,
     SymbolKind? ExactKind = null,
-    bool EnumOnly = false
+    bool EnumOnly = false,
+    string? ModuleFilter = null
 );
 
-public record SymbolSummary(
+public sealed record SymbolSummary(
     string FullName,
     SymbolKind Kind,
     string Namespace,
-    string AssemblyName,
+    string ModuleName,
     string Signature,
     string RelativeSourcePath
 );
 
-public record TypeDefinitionDetail(
+public sealed record TypeDefinitionDetail(
     string FullName,
     string Namespace,
     string? BaseType,
@@ -44,20 +47,21 @@ public record TypeDefinitionDetail(
     IReadOnlyList<string> FieldSignatures,
     IReadOnlyList<string> MethodSignatures,
     string RawSourceCode,
-    string? AssemblyName = null,
+    string? ModuleName = null,
     string? RelativeSourcePath = null
 );
 
-public record CodeSearchQuery(
+public sealed record CodeSearchQuery(
     string SearchTerm,
     string? NamespacePrefix = null,
+    string? ModuleFilter = null,
     int Limit = 25
 );
 
-public record CodeSearchMatch(
+public sealed record CodeSearchMatch(
     string FullName,
     string Namespace,
-    string? AssemblyName,
+    string? ModuleName,
     string? RelativeSourcePath,
     int LineNumber,
     string Snippet

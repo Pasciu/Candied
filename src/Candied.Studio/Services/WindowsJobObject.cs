@@ -5,7 +5,7 @@ using Candied.Studio.Native;
 
 namespace Candied.Studio.Services;
 
-public sealed class WindowsJobObject : IWindowsJobObject
+internal sealed class WindowsJobObject : IWindowsJobObject
 {
     private IntPtr _jobHandle = IntPtr.Zero;
     private bool _isDisposed;
@@ -56,18 +56,24 @@ public sealed class WindowsJobObject : IWindowsJobObject
 
     public bool AssignProcess(Process process)
     {
-        if (process == null || process.HasExited) return false;
+        if (process == null || process.HasExited)
+        {
+            return false;
+        }
+
         return AssignProcess(process.Handle);
     }
 
     public bool AssignProcess(IntPtr processHandle)
     {
-        if (_jobHandle == IntPtr.Zero)
+        if (processHandle == IntPtr.Zero)
         {
-            if (!Initialize())
-            {
-                return false;
-            }
+            return false;
+        }
+
+        if (_jobHandle == IntPtr.Zero && !Initialize())
+        {
+            return false;
         }
 
         return Win32Native.AssignProcessToJobObject(_jobHandle, processHandle);
@@ -82,8 +88,8 @@ public sealed class WindowsJobObject : IWindowsJobObject
                 Win32Native.CloseHandle(_jobHandle);
                 _jobHandle = IntPtr.Zero;
             }
+
             _isDisposed = true;
         }
-        GC.SuppressFinalize(this);
     }
 }

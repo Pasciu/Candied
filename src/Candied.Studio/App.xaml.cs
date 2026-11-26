@@ -1,18 +1,14 @@
 using System;
 using System.Threading.Tasks;
 using System.Windows;
-using Candied.Decompiler;
 using Candied.Studio.Services;
 using Candied.Studio.ViewModels;
 using Candied.Studio.Views;
-using Candied.Workspace;
+using Candied.Vision;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Candied.Studio;
 
-/// <summary>
-/// Interaction logic for App.xaml
-/// </summary>
 public partial class App : Application
 {
     private ServiceProvider? _serviceProvider;
@@ -52,15 +48,14 @@ public partial class App : Application
         {
             var services = new ServiceCollection();
 
-            // Infrastructure adapters
-            services.AddDecompilerInfrastructure();
-            services.AddWorkspaceInfrastructure();
+            // Pure Vision & Input infrastructure (zero Core/Decompiler/Modding dependencies)
+            services.AddVisionInfrastructure();
 
-            // Studio services
+            // Studio Win32 & HTTP Host services
             services.AddSingleton<IWindowsJobObject, WindowsJobObject>();
-            services.AddSingleton<IUnityWindowLocator, UnityWindowLocator>();
+            services.AddSingleton<IWindowLocator, Win32WindowLocator>();
             services.AddSingleton<IWindowEmbedder, Win32WindowEmbedder>();
-            services.AddSingleton<IUnityGameHostController, UnityGameHostController>();
+            services.AddSingleton<ITargetHostController, TargetHostController>();
             services.AddSingleton<StudioHttpServer>();
 
             // UI components

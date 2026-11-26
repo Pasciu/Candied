@@ -13,10 +13,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Candied.Primitives\Candied.Primitives.csproj" />
-    <ProjectReference Include="..\Candied.Core\Candied.Core.csproj" />
-    <ProjectReference Include="..\Candied.Workspace\Candied.Workspace.csproj" />
-    <ProjectReference Include="..\Candied.Decompiler\Candied.Decompiler.csproj" />
-    <ProjectReference Include="..\Candied.VisionBridge.Protocol\Candied.VisionBridge.Protocol.csproj" />
+    <ProjectReference Include="..\Candied.Vision.Protocol\Candied.Vision.Protocol.csproj" />
+    <ProjectReference Include="..\Candied.Vision\Candied.Vision.csproj" />
   </ItemGroup>
 
   <ItemGroup>

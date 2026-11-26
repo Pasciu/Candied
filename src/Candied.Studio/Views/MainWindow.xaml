@@ -3,8 +3,8 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:controls="clr-namespace:Candied.Studio.Controls"
         xmlns:vm="clr-namespace:Candied.Studio.ViewModels"
-        Title="Candied Studio — Unity 16:9 Host &amp; Vision Bridge Workbench"
-        Height="860" Width="1520"
+        Title="Candied Studio — Universal 16:9 Window Host &amp; Live Vision Workbench"
+        Height="860" Width="1540"
         MinHeight="640" MinWidth="980"
         WindowStartupLocation="CenterScreen"
         ShowInTaskbar="True"
@@ -12,7 +12,6 @@
         Foreground="#F4F4F5">
 
     <Window.Resources>
-        <!-- Stile moderno per pulsanti dark/workbench -->
         <Style x:Key="WorkbenchButtonStyle" TargetType="Button">
             <Setter Property="Background" Value="#27272A" />
             <Setter Property="Foreground" Value="#F4F4F5" />
@@ -50,13 +49,12 @@
             </Setter>
         </Style>
 
-        <!-- Stile per le Tab dell'Inspector -->
         <Style TargetType="TabItem">
             <Setter Property="Background" Value="#18181B" />
             <Setter Property="Foreground" Value="#A1A1AA" />
             <Setter Property="BorderThickness" Value="0" />
-            <Setter Property="Padding" Value="12,7" />
-            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Padding" Value="10,7" />
+            <Setter Property="FontSize" Value="11.5" />
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="Template">
@@ -89,18 +87,16 @@
 
     <Grid>
         <Grid.RowDefinitions>
-            <!-- Row 0: Top Workbench Command Bar -->
             <RowDefinition Height="Auto" />
-            <!-- Row 1: Main Stage + Collapsible Inspector -->
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
         <!-- ========================================================================= -->
-        <!-- ROW 0: TOP WORKBENCH COMMAND BAR (2-Row Responsive Toolbar)               -->
+        <!-- ROW 0: TOP WORKBENCH COMMAND BAR                                          -->
         <!-- ========================================================================= -->
         <Border Grid.Row="0" Background="#18181B" BorderBrush="#27272A" BorderThickness="0,0,0,1" Padding="14,8">
             <StackPanel>
-                <!-- RIGA 1: Brand + Selezione Gioco + Controlli Processo -->
+                <!-- RIGA 1: Brand + Target / Emulatore + Controlli Processo -->
                 <Grid Margin="0,0,0,6">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" />
@@ -108,50 +104,61 @@
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
 
-                    <!-- 1. Brand -->
                     <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,16,0">
                         <Border Background="#0284C7" Width="8" Height="22" CornerRadius="3" Margin="0,0,8,0" />
                         <StackPanel>
                             <TextBlock Text="CANDIED STUDIO" FontSize="14" FontWeight="Bold" Foreground="#F4F4F5" />
-                            <TextBlock Text="16:9 Host &amp; Vision Workbench" FontSize="10" Foreground="#71717A" />
+                            <TextBlock Text="Universal Window Host &amp; Vision" FontSize="10" Foreground="#71717A" />
                         </StackPanel>
                     </StackPanel>
 
-                    <!-- 2. Selettore Gioco Registrato + Sfoglia -->
                     <Grid Grid.Column="1" VerticalAlignment="Center" Margin="0,0,14,0">
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="165" />
+                            <ColumnDefinition Width="155" />
                             <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
 
                         <ComboBox Grid.Column="0"
-                                  ItemsSource="{Binding RegisteredGames}"
-                                  SelectedItem="{Binding SelectedRegisteredGame}"
+                                  ItemsSource="{Binding RecentTargets}"
+                                  SelectedItem="{Binding SelectedRecentTarget}"
                                   DisplayMemberPath="Name"
-                                  ToolTip="Seleziona rapidamente un gioco registrato in Candied"
+                                  ToolTip="Seleziona rapidamente un gioco o ROM recente"
                                   Margin="0,0,6,0" Padding="6,4" FontSize="12"
                                   VerticalContentAlignment="Center" />
 
                         <TextBox Grid.Column="1"
-                                 Text="{Binding SelectedGamePath, Mode=OneWay}"
+                                 Text="{Binding SelectedTargetPath, Mode=OneWay}"
                                  IsReadOnly="True"
                                  Background="#09090B" Foreground="#D4D4D8" BorderBrush="#3F3F46"
                                  Padding="8,5" VerticalContentAlignment="Center" FontSize="11"
-                                 ToolTip="{Binding SelectedGamePath}" />
+                                 ToolTip="{Binding SelectedTargetPath}" />
 
-                        <Button Grid.Column="2" Content="Sfoglia..." Command="{Binding BrowseGameCommand}"
+                        <Button Grid.Column="2" Content="Sfoglia..." Command="{Binding BrowseTargetCommand}"
                                 Style="{StaticResource WorkbenchButtonStyle}"
+                                ToolTip="Sfoglia eseguibile PC o file ROM/ISO"
                                 Margin="6,0,0,0" Padding="10,5" />
 
-                        <Button Grid.Column="3" Content="↻" Command="{Binding RefreshRegisteredGamesCommand}"
+                        <Button Grid.Column="3" Content="Emu..." Command="{Binding BrowseRunnerCommand}"
                                 Style="{StaticResource WorkbenchButtonStyle}"
-                                ToolTip="Ricarica elenco giochi registrati"
+                                ToolTip="{Binding SelectedRunnerPath}"
+                                Margin="4,0,0,0" Padding="8,5" />
+
+                        <Button Grid.Column="4" Content="×" Command="{Binding ClearRunnerCommand}"
+                                Style="{StaticResource WorkbenchButtonStyle}"
+                                Visibility="{Binding HasRunnerPath, Converter={x:Static controls:VisibilityConverters.BooleanToVisibility}}"
+                                ToolTip="Rimuovi emulatore/runner selezionato"
+                                Margin="4,0,0,0" Padding="7,5" />
+
+                        <Button Grid.Column="5" Content="↻" Command="{Binding RefreshRecentTargetsCommand}"
+                                Style="{StaticResource WorkbenchButtonStyle}"
+                                ToolTip="Ricarica target recenti"
                                 Margin="4,0,0,0" Padding="8,5" />
                     </Grid>
 
-                    <!-- 3. Controlli Processo -->
                     <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
                         <Button Content="▶ Avvia" Command="{Binding StartCommand}"
                                 Style="{StaticResource WorkbenchButtonStyle}"
@@ -170,7 +177,7 @@
                     </StackPanel>
                 </Grid>
 
-                <!-- RIGA 2: Scala 16:9 + Switch Mouse Virtuale/Fisico + Stato + Toggle Inspector -->
+                <!-- RIGA 2: Scala 16:9 + Switch Puntatore + Stato + Toggle Inspector -->
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" />
@@ -179,27 +186,23 @@
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
 
-                    <!-- Selettore Risoluzione 16:9 -->
                     <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,12,0">
                         <TextBlock Text="Scala 16:9:" Foreground="#A1A1AA" FontSize="11.5" VerticalAlignment="Center" Margin="0,0,6,0" />
                         <ComboBox ItemsSource="{Binding ViewportPresets}"
                                   SelectedItem="{Binding SelectedViewportPreset}"
                                   DisplayMemberPath="DisplayName"
                                   Width="240" Padding="6,3" FontSize="11.5"
-                                  VerticalContentAlignment="Center"
-                                  ToolTip="Scegli la dimensione del contenitore 16:9 mantenendo sempre le proporzioni 1920×1080" />
+                                  VerticalContentAlignment="Center" />
                     </StackPanel>
 
-                    <!-- Switch Mouse Virtuale / Fisico -->
                     <Button Grid.Column="1"
                             Content="{Binding InputIsolationButtonText}"
                             Command="{Binding ToggleInputIsolationCommand}"
                             Style="{StaticResource WorkbenchButtonStyle}"
                             Background="#1E293B" BorderBrush="#38BDF8"
                             Margin="0,0,14,0" Padding="12,4"
-                            ToolTip="Passa tra il Mouse Virtuale isolato dell'AI e il tuo Mouse Fisico per giocare manualmente" />
+                            ToolTip="Isola il puntatore virtuale AI (disponibile con sensore Tier 2)" />
 
-                    <!-- Stato testuale live -->
                     <TextBlock Grid.Column="2"
                                Text="{Binding StatusText}"
                                Foreground="#D4D4D8"
@@ -209,7 +212,6 @@
                                Margin="0,0,12,0"
                                ToolTip="{Binding StatusText}" />
 
-                    <!-- Toggle Inspector Sidebar -->
                     <Button Grid.Column="3"
                             Content="{Binding SidebarToggleButtonText}"
                             Command="{Binding ToggleSidebarCommand}"
@@ -224,39 +226,31 @@
         <!-- ========================================================================= -->
         <Grid Grid.Row="1">
             <Grid.ColumnDefinitions>
-                <!-- Colonna 0: Cinema Stage 16:9 (Niente overlay sopra GameHwndHost per rispetto Airspace) -->
                 <ColumnDefinition Width="*" MinWidth="480" />
-                <!-- Colonna 1: Splitter -->
                 <ColumnDefinition Width="Auto" />
-                <!-- Colonna 2: Workbench Inspector -->
-                <ColumnDefinition x:Name="SidebarColumn" Width="470" />
+                <ColumnDefinition x:Name="SidebarColumn" Width="485" />
             </Grid.ColumnDefinitions>
 
             <!-- COLONNA 0: CINEMA STAGE 16:9 -->
             <Grid Grid.Column="0" Background="#09090B">
                 <Grid.RowDefinitions>
-                    <!-- Area centrale per la cornice 16:9 -->
                     <RowDefinition Height="*" />
-                    <!-- Barra telemetria inferiore dello Stage -->
                     <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
-                <!-- Stage Container che calcola il box 16:9 perfetto -->
                 <Grid Grid.Row="0" x:Name="StageContainer" Margin="14" SizeChanged="OnStageContainerSizeChanged">
-                    <!-- Cornice Bezel 16:9 (dimensionata dinamicamente a 16:9 esatti da codice) -->
                     <Border x:Name="GameBezelBorder"
                             Background="#000000"
                             BorderBrush="#27272A"
                             BorderThickness="1"
                             HorizontalAlignment="Center"
                             VerticalAlignment="Center">
-                        <controls:UnityHwndHost x:Name="GameHwndHost"
-                                                HorizontalAlignment="Stretch"
-                                                VerticalAlignment="Stretch" />
+                        <controls:TargetHwndHost x:Name="GameHwndHost"
+                                                 HorizontalAlignment="Stretch"
+                                                 VerticalAlignment="Stretch" />
                     </Border>
                 </Grid>
 
-                <!-- Barra di Stato e Telemetria Live sotto il Viewport -->
                 <Border Grid.Row="1" Background="#121215" BorderBrush="#27272A" BorderThickness="0,1,0,0" Padding="14,6">
                     <Grid>
                         <Grid.ColumnDefinitions>
@@ -264,31 +258,25 @@
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
 
-                        <!-- Stato testuale a sinistra -->
                         <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-                            <TextBlock Text="{Binding GameName}" Foreground="#38BDF8" FontWeight="Bold" FontSize="12" Margin="0,0,10,0" />
+                            <TextBlock Text="{Binding TargetName}" Foreground="#38BDF8" FontWeight="Bold" FontSize="12" Margin="0,0,10,0" />
                             <TextBlock Text="•" Foreground="#52525B" Margin="0,0,10,0" />
                             <TextBlock Text="{Binding StatusText}" Foreground="#D4D4D8" FontSize="11.5" TextTrimming="CharacterEllipsis" />
                         </StackPanel>
 
-                        <!-- Pillole di Telemetria a destra -->
                         <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                            <!-- Scena Attiva -->
+                            <Border Background="#18181B" BorderBrush="#27272A" BorderThickness="1" CornerRadius="4" Padding="8,2" Margin="0,0,6,0">
+                                <TextBlock Text="{Binding VisionTierBadgeText}" Foreground="#38BDF8" FontWeight="SemiBold" FontSize="11" />
+                            </Border>
+
                             <Border Background="#18181B" BorderBrush="#27272A" BorderThickness="1" CornerRadius="4" Padding="8,2" Margin="0,0,6,0">
                                 <TextBlock Text="{Binding ActiveSceneBadge}" Foreground="#E4E4E7" FontSize="11" />
                             </Border>
 
-                            <!-- Risoluzione 16:9 -->
                             <Border Background="#18181B" BorderBrush="#27272A" BorderThickness="1" CornerRadius="4" Padding="8,2" Margin="0,0,6,0">
                                 <TextBlock Text="{Binding ViewportResolutionBadge}" Foreground="#A1A1AA" FontSize="11" />
                             </Border>
 
-                            <!-- Modalità Input (Virtual AI vs Mouse Fisico) -->
-                            <Border Background="#18181B" BorderBrush="#27272A" BorderThickness="1" CornerRadius="4" Padding="8,2" Margin="0,0,6,0">
-                                <TextBlock Text="{Binding InputIsolationBadgeText}" Foreground="#38BDF8" FontWeight="SemiBold" FontSize="11" />
-                            </Border>
-
-                            <!-- Modalità Embedding -->
                             <Border Background="#18181B" BorderBrush="#27272A" BorderThickness="1" CornerRadius="4" Padding="8,2">
                                 <TextBlock Text="{Binding EmbeddingMode}" Foreground="#4ADE80" FontWeight="SemiBold" FontSize="11" />
                             </Border>
@@ -305,7 +293,7 @@
                           Background="#18181B"
                           Visibility="{Binding IsSidebarVisible, Converter={x:Static controls:VisibilityConverters.BooleanToVisibility}}" />
 
-            <!-- COLONNA 2: WORKBENCH INSPECTOR A 3 TAB -->
+            <!-- COLONNA 2: WORKBENCH INSPECTOR A 4 TAB -->
             <Border Grid.Column="2"
                     Background="#18181B"
                     BorderBrush="#27272A"
@@ -315,25 +303,17 @@
 
                 <TabControl Background="Transparent" BorderThickness="0" Padding="0">
 
-                    <!-- ========================================================= -->
-                    <!-- TAB 1: VISION & UI INSPECTOR (Screenshot + Click Tester)  -->
-                    <!-- ========================================================= -->
+                    <!-- TAB 1: VISION & UI -->
                     <TabItem Header="📸 Vision &amp; UI">
                         <Grid Margin="0,8,0,0">
                             <Grid.RowDefinitions>
-                                <!-- Stato Bridge -->
                                 <RowDefinition Height="Auto" />
-                                <!-- Azioni Screenshot & UI -->
                                 <RowDefinition Height="Auto" />
-                                <!-- Anteprima Interattiva 16:9 -->
-                                <RowDefinition Height="245" />
-                                <!-- Coordinate Hover & Opzioni Click -->
+                                <RowDefinition Height="240" />
                                 <RowDefinition Height="Auto" />
-                                <!-- Lista Elementi uGUI Rilevati -->
                                 <RowDefinition Height="*" />
                             </Grid.RowDefinitions>
 
-                            <!-- 1. Stato VisionBridge -->
                             <Border Grid.Row="0" Background="#27272A" CornerRadius="6" Padding="10,7" Margin="0,0,0,8">
                                 <StackPanel>
                                     <TextBlock Text="{Binding VisionStatusText}" Foreground="#38BDF8" FontWeight="SemiBold" FontSize="12" TextTrimming="CharacterEllipsis" />
@@ -341,7 +321,6 @@
                                 </StackPanel>
                             </Border>
 
-                            <!-- 2. Pulsanti Cattura & Ispezione UI -->
                             <Grid Grid.Row="1" Margin="0,0,0,8">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
@@ -354,14 +333,13 @@
                                         Background="#0284C7" BorderBrush="#38BDF8"
                                         Margin="0,0,4,0" Padding="0,7" />
 
-                                <Button Grid.Column="1" Content="🎯 Rileva Elementi uGUI"
+                                <Button Grid.Column="1" Content="🎯 Rileva Elementi UI"
                                         Command="{Binding InspectUiElementsCommand}"
                                         Style="{StaticResource WorkbenchButtonStyle}"
                                         Background="#0D9488" BorderBrush="#14B8A6"
                                         Margin="4,0,0,0" Padding="0,7" />
                             </Grid>
 
-                            <!-- 3. Viewer Screenshot Interattivo (Hover per coordinate, Click per testare Virtual Mouse) -->
                             <Border Grid.Row="2"
                                     Background="#09090B"
                                     BorderBrush="#3F3F46"
@@ -380,7 +358,7 @@
                                            HorizontalAlignment="Center"
                                            VerticalAlignment="Center" />
 
-                                    <TextBlock Text="Nessun frame catturato.&#x0a;Premi 'Cattura Frame' per ispezionare e cliccare sul gioco."
+                                    <TextBlock Text="Nessun frame catturato.&#x0a;Premi 'Cattura Frame' (funziona sia in Tier 1 Win32 che in Tier 2 Sensor)."
                                                TextAlignment="Center"
                                                Foreground="#71717A"
                                                FontSize="11.5"
@@ -395,7 +373,6 @@
                                 </Grid>
                             </Border>
 
-                            <!-- 4. Barra Coordinate Live & Opzione Click-to-Test -->
                             <StackPanel Grid.Row="3" Margin="0,6,0,8">
                                 <Border Background="#09090B" BorderBrush="#27272A" BorderThickness="1" CornerRadius="4" Padding="8,4">
                                     <TextBlock Text="{Binding HoverCoordinatesText}"
@@ -409,10 +386,9 @@
                                           Foreground="#D4D4D8"
                                           FontSize="11.5"
                                           Margin="2,6,0,0"
-                                          Content="Cliccando sull'anteprima invia un click al gioco via CandiedVirtualMouse" />
+                                          Content="Cliccando sull'anteprima invia un click al gioco/emulatore" />
                             </StackPanel>
 
-                            <!-- 5. Lista Elementi uGUI Interattivi -->
                             <Grid Grid.Row="4">
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto" />
@@ -470,10 +446,8 @@
                         </Grid>
                     </TabItem>
 
-                    <!-- ========================================================= -->
-                    <!-- TAB 2: SCENA & OGGETTI (Cameras, SpriteRenderers, TMP)    -->
-                    <!-- ========================================================= -->
-                    <TabItem Header="🔍 Scena &amp; Oggetti">
+                    <!-- TAB 2: SCENA & NODI -->
+                    <TabItem Header="🔍 Scena &amp; Nodi">
                         <Grid Margin="0,8,0,0">
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
@@ -482,7 +456,6 @@
                                 <RowDefinition Height="*" />
                             </Grid.RowDefinitions>
 
-                            <!-- 1. Barra Filtro & Pulsante Ispeziona Scena -->
                             <Grid Grid.Row="0" Margin="0,0,0,8">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
@@ -493,7 +466,7 @@
                                          Text="{Binding SceneFilterText, UpdateSourceTrigger=PropertyChanged}"
                                          Background="#09090B" Foreground="#F4F4F5" BorderBrush="#3F3F46"
                                          Padding="8,6" FontSize="12" VerticalContentAlignment="Center"
-                                         ToolTip="Filtra oggetti scena per nome o genitore (es. NPC, Menu, Button, Canvas)" />
+                                         ToolTip="Filtra nodi scena per nome o percorso" />
 
                                 <Button Grid.Column="1"
                                         Content="🔍 Ispeziona Scena"
@@ -503,10 +476,8 @@
                                         Margin="6,0,0,0" Padding="12,6" />
                             </Grid>
 
-                            <!-- 2. Sommario Scena -->
                             <TextBlock Grid.Row="1" Text="{Binding SceneSummaryText}" Foreground="#38BDF8" FontWeight="SemiBold" FontSize="11.5" Margin="0,0,0,6" />
 
-                            <!-- 3. Telecamere Attive -->
                             <Border Grid.Row="2" Background="#09090B" BorderBrush="#27272A" BorderThickness="1" CornerRadius="5" Padding="6" Margin="0,0,0,8">
                                 <Grid>
                                     <Grid.RowDefinitions>
@@ -536,21 +507,20 @@
                                 </Grid>
                             </Border>
 
-                            <!-- 4. Renderer Attivi (SpriteRenderer, MeshRenderer, TextMeshPro) -->
                             <Border Grid.Row="3" Background="#09090B" BorderBrush="#27272A" BorderThickness="1" CornerRadius="5" Padding="6">
                                 <Grid>
                                     <Grid.RowDefinitions>
                                         <RowDefinition Height="Auto" />
                                         <RowDefinition Height="*" />
                                     </Grid.RowDefinitions>
-                                    <TextBlock Grid.Row="0" Text="RENDERER ATTIVI (SPRITE / MESH / TMP / PARTICLE)" Foreground="#A1A1AA" FontSize="10.5" FontWeight="Bold" Margin="2,0,0,4" />
+                                    <TextBlock Grid.Row="0" Text="NODI SCENA ATTIVI" Foreground="#A1A1AA" FontSize="10.5" FontWeight="Bold" Margin="2,0,0,4" />
                                     <ListBox Grid.Row="1"
-                                             ItemsSource="{Binding SceneRenderers}"
+                                             ItemsSource="{Binding SceneNodes}"
                                              Background="Transparent" BorderThickness="0"
                                              HorizontalContentAlignment="Stretch"
                                              ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                                         <ListBox.ItemTemplate>
-                                            <DataTemplate DataType="{x:Type vm:SceneRendererItemViewModel}">
+                                            <DataTemplate DataType="{x:Type vm:SceneNodeItemViewModel}">
                                                 <Border Background="#18181B" CornerRadius="4" Padding="8,5" Margin="0,2">
                                                     <StackPanel>
                                                         <Grid>
@@ -559,11 +529,11 @@
                                                                 <ColumnDefinition Width="Auto" />
                                                             </Grid.ColumnDefinitions>
                                                             <TextBlock Grid.Column="0" Text="{Binding HierarchyDisplay}" Foreground="#F4F4F5" FontWeight="SemiBold" FontSize="11.5" TextTrimming="CharacterEllipsis" ToolTip="{Binding HierarchyDisplay}" />
-                                                            <TextBlock Grid.Column="1" Text="{Binding RendererType}" Foreground="#38BDF8" FontSize="10.5" FontWeight="SemiBold" Margin="6,0,0,0" />
+                                                            <TextBlock Grid.Column="1" Text="{Binding NodeType}" Foreground="#38BDF8" FontSize="10.5" FontWeight="SemiBold" Margin="6,0,0,0" />
                                                         </Grid>
-                                                        <TextBlock Text="{Binding SortingSummary}" Foreground="#4ADE80" FontFamily="Consolas" FontSize="10.5" Margin="0,2,0,0" />
+                                                        <TextBlock Text="{Binding ComponentsSummary}" Foreground="#4ADE80" FontFamily="Consolas" FontSize="10.5" Margin="0,2,0,0" TextTrimming="CharacterEllipsis" />
                                                         <TextBlock Text="{Binding BoundsSummary}" Foreground="#A1A1AA" FontFamily="Consolas" FontSize="10.5" />
-                                                        <TextBlock Text="{Binding ShaderSummary}" Foreground="#71717A" FontSize="10" TextTrimming="CharacterEllipsis" />
+                                                        <TextBlock Text="{Binding AttributesSummary}" Foreground="#71717A" FontSize="10" TextTrimming="CharacterEllipsis" />
                                                     </StackPanel>
                                                 </Border>
                                             </DataTemplate>
@@ -574,10 +544,100 @@
                         </Grid>
                     </TabItem>
 
-                    <!-- ========================================================= -->
-                    <!-- TAB 3: CONSOLE LOG (Filtro Live, Errori & Colorazione)    -->
-                    <!-- ========================================================= -->
-                    <TabItem Header="📜 Console Log">
+                    <!-- TAB 3: COMANDI & INPUT 3-CHANNEL -->
+                    <TabItem Header="🎮 Comandi">
+                        <Grid Margin="0,8,0,0">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+
+                            <!-- 1. Riepilogo Profilo Comandi + Reload -->
+                            <Border Grid.Row="0" Background="#27272A" CornerRadius="6" Padding="10,7" Margin="0,0,0,8">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="{Binding ControlsSummaryText}" Foreground="#38BDF8" FontSize="11.5" VerticalAlignment="Center" TextWrapping="Wrap" />
+                                    <Button Grid.Column="1" Content="↻ Ricarica" Command="{Binding ReloadControlsCommand}"
+                                            Style="{StaticResource WorkbenchButtonStyle}" Padding="8,4" FontSize="11" Margin="8,0,0,0" />
+                                </Grid>
+                            </Border>
+
+                            <!-- 2. Pad Rapido Azioni Semantiche -->
+                            <Border Grid.Row="1" Background="#09090B" BorderBrush="#27272A" BorderThickness="1" CornerRadius="5" Padding="8" Margin="0,0,0,8">
+                                <StackPanel>
+                                    <TextBlock Text="PAD AZIONI SEMANTICHE RAPIDE" Foreground="#A1A1AA" FontSize="10.5" FontWeight="Bold" Margin="0,0,0,6" />
+                                    <UniformGrid Columns="4" Margin="0,0,0,4">
+                                        <Button Content="▲ Su" Command="{Binding TriggerActionCommand}" CommandParameter="MoveUp" Style="{StaticResource WorkbenchButtonStyle}" Margin="2" Padding="6,5" />
+                                        <Button Content="▼ Giù" Command="{Binding TriggerActionCommand}" CommandParameter="MoveDown" Style="{StaticResource WorkbenchButtonStyle}" Margin="2" Padding="6,5" />
+                                        <Button Content="◀ Sx" Command="{Binding TriggerActionCommand}" CommandParameter="MoveLeft" Style="{StaticResource WorkbenchButtonStyle}" Margin="2" Padding="6,5" />
+                                        <Button Content="▶ Dx" Command="{Binding TriggerActionCommand}" CommandParameter="MoveRight" Style="{StaticResource WorkbenchButtonStyle}" Margin="2" Padding="6,5" />
+                                    </UniformGrid>
+                                    <UniformGrid Columns="3">
+                                        <Button Content="✔ Confirm" Command="{Binding TriggerActionCommand}" CommandParameter="Confirm" Style="{StaticResource WorkbenchButtonStyle}" Background="#15803D" BorderBrush="#16A34A" Margin="2" Padding="6,5" />
+                                        <Button Content="✖ Cancel" Command="{Binding TriggerActionCommand}" CommandParameter="Cancel" Style="{StaticResource WorkbenchButtonStyle}" Background="#B91C1C" BorderBrush="#DC2626" Margin="2" Padding="6,5" />
+                                        <Button Content="⏸ Pause" Command="{Binding TriggerActionCommand}" CommandParameter="Pause" Style="{StaticResource WorkbenchButtonStyle}" Margin="2" Padding="6,5" />
+                                    </UniformGrid>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- 3. Invio Tasto Diretto -->
+                            <Grid Grid.Row="2" Margin="0,0,0,8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="Tasto:" Foreground="#A1A1AA" VerticalAlignment="Center" FontSize="11.5" Margin="0,0,8,0" />
+                                <TextBox Grid.Column="1" Text="{Binding CustomKeyInput, UpdateSourceTrigger=PropertyChanged}"
+                                         Background="#09090B" Foreground="#F4F4F5" BorderBrush="#3F3F46"
+                                         Padding="8,5" FontSize="11.5" VerticalContentAlignment="Center"
+                                         ToolTip="Es: Enter, Escape, Space, Tab, F1, E, I, UpArrow" />
+                                <Button Grid.Column="2" Content="Invia Tasto" Command="{Binding SendCustomKeyCommand}"
+                                        Style="{StaticResource WorkbenchButtonStyle}" Background="#0284C7" BorderBrush="#38BDF8"
+                                        Margin="6,0,0,0" Padding="10,5" />
+                            </Grid>
+
+                            <!-- 4. Azioni Mappate in controls.json -->
+                            <ListBox Grid.Row="3"
+                                     ItemsSource="{Binding ControlActions}"
+                                     Background="#09090B" BorderBrush="#27272A" BorderThickness="1"
+                                     HorizontalContentAlignment="Stretch"
+                                     ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate DataType="{x:Type vm:ControlActionItemViewModel}">
+                                        <Border Background="#18181B" CornerRadius="4" Padding="8,5" Margin="0,2">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <StackPanel Grid.Column="0" Margin="0,0,6,0">
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <TextBlock Text="{Binding DisplayName}" Foreground="#F4F4F5" FontWeight="SemiBold" FontSize="11.5" />
+                                                        <TextBlock Text="{Binding Source}" Foreground="#4ADE80" FontSize="10" Margin="8,1,0,0" />
+                                                    </StackPanel>
+                                                    <TextBlock Text="{Binding BindingsSummary}" Foreground="#A1A1AA" FontFamily="Consolas" FontSize="10.5" Margin="0,2,0,0" TextTrimming="CharacterEllipsis" />
+                                                </StackPanel>
+                                                <Button Grid.Column="1" Content="Esegui"
+                                                        Command="{Binding DataContext.TriggerActionCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                        CommandParameter="{Binding ActionName}"
+                                                        Style="{StaticResource WorkbenchButtonStyle}"
+                                                        Padding="8,3" FontSize="11" VerticalAlignment="Center" />
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </Grid>
+                    </TabItem>
+
+                    <!-- TAB 4: CONSOLE LOG -->
+                    <TabItem Header="📜 Log">
                         <Grid Margin="0,8,0,0">
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
@@ -585,7 +645,6 @@
                                 <RowDefinition Height="*" />
                             </Grid.RowDefinitions>
 
-                            <!-- 1. Filtro ricerca testuale e pulsanti Azione -->
                             <Grid Grid.Row="0" Margin="0,0,0,6">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
@@ -597,7 +656,7 @@
                                          Text="{Binding LogSearchText, UpdateSourceTrigger=PropertyChanged}"
                                          Background="#09090B" Foreground="#F4F4F5" BorderBrush="#3F3F46"
                                          Padding="8,5" FontSize="11.5" VerticalContentAlignment="Center"
-                                         ToolTip="Cerca nei log BepInEx / VisionBridge / Host" />
+                                         ToolTip="Cerca nei log Runtime / SensorBridge / Host" />
 
                                 <Button Grid.Column="1" Content="Copia" Command="{Binding CopyLogsCommand}"
                                         Style="{StaticResource WorkbenchButtonStyle}"
@@ -608,13 +667,11 @@
                                         Margin="4,0,0,0" Padding="10,4" FontSize="11" />
                             </Grid>
 
-                            <!-- 2. Checkbox Solo Errori / Warning -->
                             <CheckBox Grid.Row="1"
                                       IsChecked="{Binding OnlyWarningsAndErrors}"
                                       Content="Mostra solo Warning ed Errori ([Warning], [Error], Exception)"
                                       Foreground="#D4D4D8" FontSize="11.5" Margin="2,0,0,6" />
 
-                            <!-- 3. Lista Log Colorata -->
                             <ListBox Grid.Row="2"
                                      x:Name="LogsList"
                                      ItemsSource="{Binding FilteredLogEntries}"

@@ -3,78 +3,55 @@ using System.Text;
 namespace Candied.Core.Models;
 
 /// <summary>
-/// Defines the strict file storage layout for Candied.
-/// Enforces complete isolation between the Game Installation (read-only),
-/// the Mod Source Project (version-controlled), and Candied Artifacts (local/ignored).
+/// Pure Three-Zone storage path layout for Candied (zero System.IO dependencies).
+/// Isolates Zone 1 (Target Game/ROM), Zone 2 (Mod Source Workspace), and Zone 3 (Candied Artifacts &amp; Indexes).
 /// </summary>
 public sealed record CandiedStorageLayout(string WorkspaceRoot)
 {
     public string CandiedRoot => Combine(WorkspaceRoot, ".candied");
     public string ModsRoot => Combine(WorkspaceRoot, "mods");
     public string CacheRoot => Combine(CandiedRoot, "cache");
-    public string BepInExCacheDir => Combine(CacheRoot, "bepinex");
 
-    /// <summary>
-    /// Gets the root artifacts directory for a specific game: &lt;WorkspaceRoot&gt;/.candied/games/&lt;GameName&gt;/
-    /// </summary>
-    public string GetGameArtifactsDir(string gameName) =>
-        Combine(CandiedRoot, "games", Sanitize(gameName));
+    public string GetLoaderCacheDir(string loaderId) =>
+        Combine(CacheRoot, Sanitize(loaderId));
 
-    /// <summary>
-    /// Gets the decompiled C# source files directory: &lt;WorkspaceRoot&gt;/.candied/games/&lt;GameName&gt;/decompiled/ or for a specific assembly.
-    /// </summary>
-    public string GetDecompiledDir(string gameName, string? assemblyName = null) =>
-        string.IsNullOrWhiteSpace(assemblyName)
-            ? Combine(GetGameArtifactsDir(gameName), "decompiled")
-            : Combine(GetGameArtifactsDir(gameName), "decompiled", Sanitize(assemblyName));
+    public string GetTargetArtifactsDir(string targetName) =>
+        Combine(CandiedRoot, "games", Sanitize(targetName));
 
-    /// <summary>
-    /// Gets the SQLite symbol index database path: &lt;WorkspaceRoot&gt;/.candied/games/&lt;GameName&gt;/index.db
-    /// </summary>
-    public string GetDatabasePath(string gameName) =>
-        Combine(GetGameArtifactsDir(gameName), "index.db");
+    public string GetExtractedCodeDir(string targetName, string? moduleName = null) =>
+        string.IsNullOrWhiteSpace(moduleName)
+            ? Combine(GetTargetArtifactsDir(targetName), "extracted")
+            : Combine(GetTargetArtifactsDir(targetName), "extracted", Sanitize(moduleName));
 
-    /// <summary>
-    /// Gets the documentation hub directory: &lt;WorkspaceRoot&gt;/.candied/games/&lt;GameName&gt;/docs/
-    /// </summary>
-    public string GetDocsDir(string gameName) =>
-        Combine(GetGameArtifactsDir(gameName), "docs");
+    public string GetDatabasePath(string targetName) =>
+        Combine(GetTargetArtifactsDir(targetName), "index.db");
 
-    /// <summary>
-    /// Gets the path to GAME_OVERVIEW.md
-    /// </summary>
-    public string GetOverviewDocPath(string gameName) =>
-        Combine(GetDocsDir(gameName), "GAME_OVERVIEW.md");
+    public string GetDocsDir(string targetName) =>
+        Combine(GetTargetArtifactsDir(targetName), "docs");
 
-    /// <summary>
-    /// Gets the path to NAMESPACES.md
-    /// </summary>
-    public string GetNamespacesDocPath(string gameName) =>
-        Combine(GetDocsDir(gameName), "NAMESPACES.md");
+    public string GetOverviewDocPath(string targetName) =>
+        Combine(GetDocsDir(targetName), "TARGET_OVERVIEW.md");
 
-    /// <summary>
-    /// Gets the path to SYMBOLS_INDEX.json
-    /// </summary>
-    public string GetSymbolsIndexJsonPath(string gameName) =>
-        Combine(GetDocsDir(gameName), "SYMBOLS_INDEX.json");
+    public string GetNamespacesDocPath(string targetName) =>
+        Combine(GetDocsDir(targetName), "NAMESPACES.md");
 
-    /// <summary>
-    /// Gets the mod project directory: &lt;WorkspaceRoot&gt;/mods/&lt;ModName&gt;/
-    /// </summary>
+    public string GetSymbolsIndexJsonPath(string targetName) =>
+        Combine(GetDocsDir(targetName), "SYMBOLS_INDEX.json");
+
+    public string GetResearchNotesPath(string targetName) =>
+        Combine(GetDocsDir(targetName), "RESEARCH.md");
+
+    public string GetControlProfilePath(string targetName) =>
+        Combine(GetTargetArtifactsDir(targetName), "controls.json");
+
+    public string GetScreenshotsDir(string targetName) =>
+        Combine(GetTargetArtifactsDir(targetName), "screenshots");
+
+    public string GetAssetsDir(string targetName) =>
+        Combine(GetTargetArtifactsDir(targetName), "assets");
+
     public string GetModProjectDir(string modName) =>
         Combine(ModsRoot, Sanitize(modName));
-
-    /// <summary>
-    /// Gets the IPC directory for live game inspection: &lt;WorkspaceRoot&gt;/.candied/games/&lt;GameName&gt;/ipc/
-    /// </summary>
-    public string GetIpcDir(string gameName) =>
-        Combine(GetGameArtifactsDir(gameName), "ipc");
-
-    /// <summary>
-    /// Gets the assets directory for on-demand extracted sprites/textures: &lt;WorkspaceRoot&gt;/.candied/games/&lt;GameName&gt;/assets/
-    /// </summary>
-    public string GetAssetsDir(string gameName) =>
-        Combine(GetGameArtifactsDir(gameName), "assets");
 
     public static string Combine(string first, string second)
     {

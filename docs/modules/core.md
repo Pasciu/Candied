@@ -1,150 +1,98 @@
 # Module: Candied.Core
 
 ## 1. Overview
-`Candied.Core` contains the pure domain logic, entities, value records, domain errors, and hexagonal port interfaces. It has no knowledge of external frameworks, file systems, databases, or transport mechanisms.
+`Candied.Core` contains the 100% engine-agnostic domain model, composable platform capability traits, shared infrastructure ports, domain error records, and application use cases.
 
 * **Namespace:** `Candied.Core`
-* **Dependencies:** `Candied.Primitives`
-* **Project Reference Invariants:** Must never reference `Candied.Decompiler`, `Candied.Workspace`, or `Candied.Agent`.
-* **Zero I/O Invariant:** Prohibited from importing `System.IO.*` or `System.Diagnostics.Process` (enforced by ArchUnitNET).
+* **Target Framework:** `net9.0`
+* **Dependencies:** `Candied.Primitives` ONLY
+* **Architectural Invariants (Enforced by `Candied.ArchitectureTests`):**
+  1. Must NEVER reference `Candied.Infrastructure`, `Candied.Vision`, `Candied.Platforms.*`, `Candied.Studio`, or `Candied.Agent`.
+  2. Zero side effects: prohibited from using `System.IO.*` (`File`, `Directory`, `FileStream`) or `System.Diagnostics.Process`.
+  3. Completely engine-agnostic: zero domain types named after `Unity`, `BepInEx`, `Mono`, `Il2Cpp`, or `Dll`.
 
 ---
 
-## 2. Ports (Interfaces)
+## 2. Target Abstraction (`TargetDescriptor`)
 
-Ports define the outbound capabilities required by the domain. Concrete adapters in infrastructure modules implement these ports.
+Every game—whether a compiled PC directory, a scripted game, or a console ROM/ISO paired with an emulator (`RunnerPath`)—is represented uniformly by `TargetDescriptor`:
+
+```csharp
+public sealed record TargetDescriptor(
+    TargetId Id,
+    string Name,
+    string TargetPath,
+    string? RunnerPath,
+    string PlatformId,
+    string PlatformDisplayName,
+    string Architecture,
+    string? EngineVersion,
+    string? RuntimeFramework,
+    ModLoaderStatus ModLoader,
+    IReadOnlyList<PlatformCapability> Capabilities,
+    IReadOnlyList<DiscoveredCodeModule> CodeModules,
+    IReadOnlyDictionary<string, string> Metadata,
+    IReadOnlyList<string> Warnings
+);
+```
+
+* **`PlatformCapability` flags:** `EnvironmentSetup`, `CodeKnowledge`, `AssetPipeline`, `ModWorkspace`, `RuntimeLogs`, `InputProfileExtraction`, `LiveVisionSensor`.
+* **`CodeModuleTier`:** Categorizes discovered code modules (`CoreLogic`, `ModularLogic`, `AuxiliaryOrThirdParty`) whether they are managed `.dll` modules, IL2CPP metadata dumps, `.pck` script packs, or Lua archives.
+* **`CandiedStorageLayout`:** Pure string-only path calculator implementing the **Three-Zone Storage Architecture**:
+  * **Zone 1:** Target game/ROM location (kept clean; any loader files tracked in `.candied_manifest.json`).
+  * **Zone 2:** Mod source workspaces (`<WorkspaceRoot>/mods/<ModName>/`).
+  * **Zone 3:** Reverse-engineering & perception artifacts (`<WorkspaceRoot>/.candied/games/<TargetName>/` containing `extracted/`, `index.db`, `docs/`, `assets/`, `screenshots/`, `controls.json`, plus shared loader caches in `.candied/cache/<loaderId>/`).
+
+---
+
+## 3. Composable Platform Capability Traits (`Candied.Core.Capabilities`)
+
+Instead of forcing every engine into a rigid monolithic interface, each `ITargetPlatform` exposes only the capabilities supported by that engine:
 
 ```mermaid
 classDiagram
-    class IGameDetector {
-        +DetectGameAsync(string gameDir) Task~Result~GameEnvironment, DetectionError~~
+    class ITargetPlatform {
+        +string PlatformId
+        +string DisplayName
+        +int Priority
+        +CanHandle(string targetPath, string? runnerPath) bool
+        +InspectAsync(string targetPath, string? runnerPath, CandiedStorageLayout layout)
+        +IEnvironmentSetupCapability? EnvironmentSetup
+        +ICodeKnowledgeCapability? CodeKnowledge
+        +IAssetPipelineCapability? AssetPipeline
+        +IModWorkspaceCapability? ModWorkspace
+        +IRuntimeLogCapability? RuntimeLogs
     }
-    class IDecompilerEngine {
-        +DecompileAssemblyAsync(string assemblyPath, string outputDir) Task~Result~DecompilationOutput, DecompilerError~~
-    }
-    class ISymbolIndex {
-        +IndexSourceTreeAsync(string sourceDir, string? assemblyName, string? databasePath) Task~Result~Unit, IndexError~~
-        +SearchSymbolsAsync(SymbolQuery query, string? databasePath) Task~Result~IReadOnlyList~SymbolSummary~, IndexError~~
-        +GetAllSymbolsAsync(string? databasePath) Task~Result~IReadOnlyList~SymbolSummary~, IndexError~~
-        +GetTypeDetailAsync(string fullTypeName, string? databasePath) Task~Result~TypeDefinitionDetail, IndexError~~
-    }
-    class IDocumentationGenerator {
-        +GenerateKnowledgeHubAsync(GameEnvironment game, IReadOnlyList~SymbolSummary~ symbols, string docsDir) Task~Result~Unit, ScaffoldError~~
-        +SaveResearchNotesAsync(string gameName, string notes, string docsDir) Task~Result~Unit, ScaffoldError~~
-    }
-    class IProjectGenerator {
-        +ScaffoldModProjectAsync(ModScaffoldSpec spec) Task~Result~ModProjectManifest, ScaffoldError~~
-    }
-    class IBuildRunner {
-        +BuildModAsync(string projectPath, string config) Task~Result~BuildReport, BuildExecutionError~~
-    }
-    class ILogMonitor {
-        +ReadRecentLogsAsync(string logPath, int maxLines) Task~Result~IReadOnlyList~LogEntry~, LogMonitorError~~
-        +StreamLogsAsync(string logPath) IAsyncEnumerable~LogEntry~
-    }
-    class IEnvironmentProvisioner {
-        +ProvisionEnvironmentAsync(ProvisioningSpec spec, string cacheDirectory) Task~Result~ProvisioningReport, ProvisioningError~~
-        +RollbackEnvironmentAsync(string gameRootPath) Task~Result~RollbackReport, ProvisioningError~~
-    }
-    class IGameProcessManager {
-        +GetRunningGameAsync(GameEnvironment game) Task~Result~GameProcessInfo?, ProcessManagementError~~
-        +LaunchGameAsync(GameEnvironment game, GameLaunchOptions options) Task~Result~GameProcessInfo, ProcessManagementError~~
-        +StopGameAsync(GameEnvironment game) Task~Result~Unit, ProcessManagementError~~
-    }
-    class IAssetExtractor {
-        +DiscoverAssetsAsync(GameEnvironment game, AssetDiscoveryFilter filter) Task~Result~IReadOnlyList~DiscoveredAssetInfo~, AssetExtractionError~~
-        +ExtractAssetsAsync(GameEnvironment game, AssetExtractionFilter filter, string outputDir) Task~Result~IReadOnlyList~ExtractedAssetInfo~, AssetExtractionError~~
-    }
+    ITargetPlatform --> IEnvironmentSetupCapability
+    ITargetPlatform --> ICodeKnowledgeCapability
+    ITargetPlatform --> IAssetPipelineCapability
+    ITargetPlatform --> IModWorkspaceCapability
+    ITargetPlatform --> IRuntimeLogCapability
 ```
 
----
-
-## 3. Domain Models & Value Objects
-
-All models in `Core` are immutable C# records:
-
-* **`CandiedStorageLayout`:** Pure domain value object defining the directory paths for the Three-Zone Architecture (Zone 1: Game installation, Zone 2: Mod workspace, Zone 3: Artifacts store `.candied/games/<GameName>/`, plus global caching in `.candied/cache/bepinex/`). Performs pure string path calculations with zero `System.IO` dependencies.
-* **`ProvisioningSpec`, `ProvisioningReport`, `RollbackReport` & `ProvisioningManifest`:**
-  - `ProvisioningSpec`: Specifies target `GameEnvironment`, requested BepInEx version, and logging preferences (Console/Disk).
-  - `ProvisioningReport`: Outcome of provisioning, including target architecture, extracted files count, manifest path, and warnings.
-  - `RollbackReport`: Outcome of uninstallation, including deleted files and directories count and success status.
-  - `ProvisioningManifest`: Serializable model stored in `.candied_manifest.json` tracking installed files and directories with timestamp and release info.
-* **`AssemblyTier` & `DiscoveredAssembly`:** Multi-tier semantic categorization of discovered game assemblies:
-  - `AssemblyTier.CoreGame`: `[GameName].*.dll`, `Assembly-CSharp.dll`, `Assembly-CSharp-firstpass.dll`.
-  - `AssemblyTier.GameModular`: Game-specific secondary or modular assemblies.
-  - `AssemblyTier.AuxiliaryOrThirdParty`: Unity engine modules, BCL frameworks, and common middleware.
-  ```csharp
-  public record DiscoveredAssembly(
-      string Name,
-      string FullPath,
-      long SizeBytes,
-      AssemblyTier Tier,
-      string Reason,
-      bool IsDecompiled = false
-  );
-  ```
-* **`BepInExInstallation`:** Captures BepInEx presence, version string (e.g. `5.4.21.0`), and root path.
-* **`GameEnvironment`:** Complete environment audit for a detected game target:
-  ```csharp
-  public record GameEnvironment(
-      GameId Id,
-      string GameName,
-      string GameRootPath,
-      string ManagedPath,
-      UnityEngineType EngineType,
-      string Architecture,
-      string? TargetFramework,
-      BepInExInstallation BepInExInfo,
-      IReadOnlyList<DiscoveredAssembly> DiscoveredAssemblies,
-      IReadOnlyList<string> EnvironmentWarnings
-  );
-  ```
-* **`GameArchitectureOverview` & Sub-models:** Structured data representing detected game architecture, assemblies, namespaces, and gameplay managers used for generating human and machine documentation.
-* **`SymbolQuery` & `SymbolSummary`:** Lightweight search filters and returned summaries to prevent blowing up the LLM context window.
-* **`TypeDefinitionDetail`:** Detailed C# type signature, base class, implemented interfaces, fields, methods, and raw code snippet.
-* **`ModScaffoldSpec` & `ModProjectManifest`:**
-  - `ModScaffoldSpec`: Immutable specification for scaffolding BepInEx plugin projects. Includes `ModName`, `PluginGuid`, `Version`, `OutputDirectory`, `TargetGame`, optional `PublicizedAssemblyNames`, and `IncludeAssetPipeline` (boolean flag defaulted to `false`). The agent explicitly toggles `IncludeAssetPipeline: true` only when custom textures/sprites are required, keeping logic-only mods lightweight.
-  - `ModProjectManifest`: Describes the generated mod project file paths and status.
-* **`LiveInspection` Models (Generic Unity Engine Models):**
-  - `GameProcessInfo`: Captures PID, process name, window title, responsiveness, start time, and bridge attachment status.
-  - `GameLaunchOptions`: Windowed mode flag, resolution dimensions, and custom launch arguments.
-  - `UnityTypeQuery`: Query specification for live Unity objects by type name and optional regex/glob pattern.
-  - `UnityObjectSummary` & `UnityObjectDetail`: Generic representation of in-memory Unity objects and their serialized key-value pairs or full JSON properties.
-  - `AssetDumpSpec` & `ExtractedAssetReport`: Specifications and output metadata for on-demand extraction of single Sprite or Texture2D assets to PNG.
+* **`IEnvironmentSetupCapability`:** Reversibly provisions and rolls back mod loaders and in-game Vision sensors (`ProvisionAsync`, `RollbackAsync`).
+* **`ICodeKnowledgeCapability`:** Extracts/decompiles/dumps a named `moduleName` into Zone 3 (`extracted/<ModuleName>/`) and populates `ISymbolIndex`.
+* **`IAssetPipelineCapability`:** Discovers and extracts sprites, textures, text, or data containers offline into Zone 3 (`assets/`).
+* **`IModWorkspaceCapability`:** Scaffolds mod projects in Zone 2 (`ScaffoldModAsync` with extensible `PlatformOptions`) and builds/packages/deploys them (`BuildModAsync`).
+* **`IRuntimeLogCapability`:** Resolves default runtime log paths and parses structured `LogEntry` records (`ReadRecentLogsAsync`).
+* **`IPlatformToolProvider` & `IPlatformGuideProvider`:** Allow platform plugins to dynamically register engine-specific MCP/CLI tools (e.g., `unity-add-reference` for `unity.mono`) and markdown modding playbooks without polluting `Candied.Core`.
 
 ---
 
-## 4. Use Cases
+## 4. Shared Outbound Ports (`Candied.Core.Ports`)
 
-Use cases in `Candied.Core.UseCases` orchestrate domain workflows:
+* **`ITargetPlatformRegistry`:** Resolves the highest-priority `ITargetPlatform` matching `(targetPath, runnerPath)` (falling back to `generic.window` for unknown games/emulators) and resolves build platforms for mod projects.
+* **`ISymbolIndex`:** Universal symbol and source code index supporting both Roslyn C# AST trees (`IndexCSharpSourceTreeAsync`) and pre-extracted symbols from non-C# platforms (`IndexExtractedSymbolsAsync`), plus `SearchSymbolsAsync`, FTS5 `SearchCodeAsync`, and `GetTypeDetailAsync`.
+* **`IAssetIndex`:** Paginated offline catalog for discovered game assets (`IndexAssetsAsync`, `SearchAssetsPageAsync`).
+* **`IDocumentationGenerator`:** Renders Zone 3 Knowledge Hub documents (`GAME_OVERVIEW.md`, `NAMESPACES.md`, `SYMBOLS_INDEX.json`, `RESEARCH.md`).
+* **`ITargetProcessManager`:** OS process inspection, launch, and graceful termination.
 
-* **`InspectGameEnvironmentUseCase`:**
-  Performs non-destructive environment discovery (engine type, architecture, BepInEx installation status, .NET target framework, classified assemblies catalog) without triggering any decompilation.
-* **`SetupGameEnvironmentUseCase`:**
-  Audits the target game directory, verifies architecture, and provisions the correct BepInEx loader, logging config, and manifest via `IEnvironmentProvisioner`.
-* **`RollbackGameEnvironmentUseCase`:**
-  Deterministically reverts all files written during provisioning using the `.candied_manifest.json` tracker via `IEnvironmentProvisioner`.
-* **`DecompileAssemblyUseCase`:**
-  Decompiles a single specified `.dll` into an isolated assembly directory (`decompiled/<AssemblyName>/`) using `IDecompilerEngine`, incrementally updates the SQLite index via `ISymbolIndex` without wiping other assemblies, and automatically synchronizes the Knowledge Hub (`GAME_OVERVIEW.md`, `NAMESPACES.md`, `SYMBOLS_INDEX.json`) via `IDocumentationGenerator`.
-* **`SearchGameSymbolsUseCase`:**
-  Pure query use case querying the SQLite symbol index without triggering file operations.
-* **`SaveResearchNotesUseCase`:**
-  Persists agent online research notes (e.g., community modding guides, BepInEx requirements) into Zone 3 (`RESEARCH.md`) via `IDocumentationGenerator`.
-* **`GetTypeDetailUseCase`:**
-  Retrieves complete type structure and decompiled source code from the SQLite symbol index, supporting both default and custom `databasePath` locations.
-* **`GetGameProcessStatusUseCase`:**
-  Checks whether the target Unity game is currently running via `IGameProcessManager`.
-* **`LaunchGameUseCase`:**
-  Controls game execution using an "Attach-First" strategy: if the game process is already running, attaches to it immediately without spawning duplicate windows; otherwise launches the game in a controlled compact window.
-* **`StopGameUseCase`:**
-  Terminates the spawned game process cleanly via `IGameProcessManager`.
-* **`DiscoverAssetsUseCase`:**
-  Scans Unity archives on disk via `IAssetExtractor` to locate visual assets (Sprites, Texture2Ds) by name pattern or asset type completely offline.
-* **`ExtractAssetsUseCase`:**
-  Extracts targeted Sprites or Textures directly from disk archives into PNG files in Zone 3 (`.candied/games/<Game>/assets/`) via `IAssetExtractor`.
-* **`ScaffoldModUseCase`:**
-  Orchestrates mod project creation via `IProjectGenerator`.
-* **`BuildModUseCase`:**
-  Orchestrates compilation and diagnostic capture via `IBuildRunner`.
-* **`ReadLogsUseCase`:**
-  Orchestrates log monitoring and parsing via `ILogMonitor`.
+---
+
+## 5. Pure Domain Analysis & Use Cases
+
+* **`TypeMemberSourceExtractor`:** Pure brace-balanced source extractor enabling `type(..., memberFilter: "...")` to return only matching methods/fields/properties without flooding LLM context windows.
+* **Use Cases (`Candied.Core.UseCases`):**
+  * *Target & Environment:* `InspectTargetUseCase`, `SetupTargetEnvironmentUseCase`, `RollbackTargetEnvironmentUseCase`, `SaveResearchNotesUseCase`.
+  * *Code & Symbols:* `ExtractCodeModuleUseCase` (extracts module -> updates SQLite -> regenerates Knowledge Hub), `SearchSymbolsUseCase`, `SearchCodeUseCase`, `GetTypeDetailUseCase`.
+  * *Assets, Modding & Logs:* `IndexAssetsUseCase`, `DiscoverAssetsUseCase`, `ExtractAssetsUseCase`, `ScaffoldModUseCase`, `BuildModUseCase`, `ReadRuntimeLogsUseCase`.

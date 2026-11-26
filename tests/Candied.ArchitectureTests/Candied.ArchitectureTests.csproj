@@ -4,8 +4,11 @@
     <IsTestProject>true</IsTestProject>
     <RootNamespace>Candied.ArchitectureTests</RootNamespace>
     <AssemblyName>Candied.ArchitectureTests</AssemblyName>
-    <!-- CA1707: Identifiers should not contain underscores (standard practice for unit test method names) -->
     <NoWarn>$(NoWarn);CA1707</NoWarn>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(OS)' == 'Windows_NT'">
+    <TargetFramework>net9.0-windows</TargetFramework>
   </PropertyGroup>
 
   <ItemGroup>
@@ -21,8 +24,15 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Candied.Primitives\Candied.Primitives.csproj" />
     <ProjectReference Include="..\..\src\Candied.Core\Candied.Core.csproj" />
-    <ProjectReference Include="..\..\src\Candied.Decompiler\Candied.Decompiler.csproj" />
-    <ProjectReference Include="..\..\src\Candied.Workspace\Candied.Workspace.csproj" />
+    <ProjectReference Include="..\..\src\Candied.Vision.Protocol\Candied.Vision.Protocol.csproj" />
+    <ProjectReference Include="..\..\src\Candied.Vision\Candied.Vision.csproj" />
+    <ProjectReference Include="..\..\src\Candied.Infrastructure\Candied.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\Platforms\Candied.Platforms.Unity.Shared\Candied.Platforms.Unity.Shared.csproj" />
+    <ProjectReference Include="..\..\src\Platforms\Candied.Platforms.Unity.Mono\Candied.Platforms.Unity.Mono.csproj" />
     <ProjectReference Include="..\..\src\Candied.Agent\Candied.Agent.csproj" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(OS)' == 'Windows_NT'">
+    <ProjectReference Include="..\..\src\Candied.Studio\Candied.Studio.csproj" />
   </ItemGroup>
 </Project>

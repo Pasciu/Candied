@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework></TargetFramework>
+    <TargetFrameworks>net35;net472</TargetFrameworks>
+    <RootNamespace>Candied.VisionSensors.UnityMono</RootNamespace>
+    <AssemblyName>Candied.VisionSensors.UnityMono</AssemblyName>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings Condition="'$(TargetFramework)' == 'net35'">disable</ImplicitUsings>
+    <NoWarn>$(NoWarn);CA1001;CA1834;CA1720;CA1510;CA1825;CA1002;CA2227</NoWarn>
+    <RestoreAdditionalProjectSources>
+      https://nuget.bepinex.dev/v3/index.json
+    </RestoreAdditionalProjectSources>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Candied.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="All" />
+    <PackageReference Include="BepInEx.Core" Version="5.4.21" />
+    <PackageReference Include="UnityEngine.Modules" Version="2021.3.16" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Candied.Vision.Protocol\Candied.Vision.Protocol.csproj" />
+  </ItemGroup>
+</Project>
